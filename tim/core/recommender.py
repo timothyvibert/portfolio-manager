@@ -198,17 +198,31 @@ def rule_short_put_harvest_theta(ctx, signals):
         return None
     if ctx.pct_captured is None or ctx.dte is None or ctx.moneyness is None:
         return None
+    # Materially underwater positions don't qualify as healthy theta capture;
+    # let them fall through to the assignment-risk / monitor rules below.
+    if ctx.pct_captured < -0.50:
+        return None
     if ctx.moneyness < -0.02 and ctx.pct_captured < 0.50 and ctx.dte > 21:
+        if ctx.pct_captured >= 0:
+            rationale = (
+                f"Short put OTM with {ctx.dte}d remaining and "
+                f"{ctx.pct_captured*100:.0f}% of premium captured. "
+                f"Hold; theta accruing in your favor."
+            )
+        else:
+            rationale = (
+                f"Short put OTM with {ctx.dte}d remaining; "
+                f"position currently {abs(ctx.pct_captured)*100:.0f}% "
+                f"underwater on premium received. "
+                f"Theta should accrue if no breach; monitor underlying for "
+                f"deterioration."
+            )
         return Recommendation(
             position_id=ctx.bbg_ticker,
             instrument_type="option",
             action="HARVEST_THETA",
             priority="monitor",
-            rationale=(
-                f"Short put OTM with {ctx.dte}d remaining and "
-                f"{ctx.pct_captured*100:.0f}% of premium captured. Hold; theta "
-                f"accruing in your favor."
-            ),
+            rationale=rationale,
             triggering_signals=[],
             metrics={"pct_captured": ctx.pct_captured, "dte": ctx.dte},
             rule_id="short_put_harvest_theta",
@@ -305,17 +319,30 @@ def rule_short_call_harvest_theta(ctx, signals):
         return None
     if ctx.pct_captured is None or ctx.dte is None or ctx.moneyness is None:
         return None
+    # Same materially-underwater guard as the put variant.
+    if ctx.pct_captured < -0.50:
+        return None
     if ctx.moneyness < -0.02 and ctx.pct_captured < 0.50 and ctx.dte > 21:
+        if ctx.pct_captured >= 0:
+            rationale = (
+                f"Short call OTM with {ctx.dte}d remaining and "
+                f"{ctx.pct_captured*100:.0f}% of premium captured. "
+                f"Hold; theta accruing in your favor."
+            )
+        else:
+            rationale = (
+                f"Short call OTM with {ctx.dte}d remaining; "
+                f"position currently {abs(ctx.pct_captured)*100:.0f}% "
+                f"underwater on premium received. "
+                f"Theta should accrue if no breach; monitor underlying for "
+                f"deterioration."
+            )
         return Recommendation(
             position_id=ctx.bbg_ticker,
             instrument_type="option",
             action="HARVEST_THETA",
             priority="monitor",
-            rationale=(
-                f"Short call OTM with {ctx.dte}d remaining and "
-                f"{ctx.pct_captured*100:.0f}% of premium captured. Hold; theta "
-                f"accruing in your favor."
-            ),
+            rationale=rationale,
             triggering_signals=[],
             metrics={"pct_captured": ctx.pct_captured, "dte": ctx.dte},
             rule_id="short_call_harvest_theta",

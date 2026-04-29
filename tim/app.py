@@ -67,6 +67,80 @@ _NUMERIC_DISPLAY_DECIMALS = {
 
 
 # ---------------------------------------------------------------------------
+# Conditional-formatting helpers (v0.9)
+# ---------------------------------------------------------------------------
+
+NAV_HIGH_THRESHOLD = 10.0   # >10% NAV → red
+NAV_MED_THRESHOLD  = 5.0    # 5-10% NAV → amber
+
+ACTION_COLORS = {
+    "CLOSE":              {"color": "#C62828", "fontWeight": "700"},
+    "ROLL_OUT":           {"color": "#B7791F", "fontWeight": "600"},
+    "ROLL_DOWN":          {"color": "#B7791F", "fontWeight": "600"},
+    "ROLL_UP":            {"color": "#B7791F", "fontWeight": "600"},
+    "ROLL_OUT_AND_DOWN":  {"color": "#B7791F", "fontWeight": "600"},
+    "ROLL_UP_AND_OUT":    {"color": "#B7791F", "fontWeight": "600"},
+    "HARVEST_THETA":      {"color": "#1E7E34", "fontWeight": "600"},
+    "ADD_OVERLAY":        {"color": "#0C4A6E", "fontWeight": "600"},
+    "ADD_HEDGE":          {"color": "#C62828", "fontWeight": "700"},
+    "ADD":                {"color": "#0C4A6E", "fontWeight": "600"},
+    "TRIM":               {"color": "#B7791F", "fontWeight": "600"},
+    "MONITOR":            {"color": "#6E6E6E", "fontWeight": "500"},
+}
+
+
+def _action_style_conditional():
+    """style_data_conditional entries for the 'action' column."""
+    return [
+        {"if": {"filter_query": f'{{action}} = "{action}"',
+                "column_id": "action"},
+         **style}
+        for action, style in ACTION_COLORS.items()
+    ]
+
+
+def _pct_nav_style_conditional():
+    """Color-band the % NAV column — concentration risk visual."""
+    return [
+        {"if": {"filter_query": f"{{pct_nav}} > {NAV_HIGH_THRESHOLD}",
+                "column_id": "pct_nav"},
+         "backgroundColor": "#FDECEA",
+         "color": "#611A15", "fontWeight": "700"},
+        {"if": {"filter_query": (f"{{pct_nav}} > {NAV_MED_THRESHOLD} && "
+                                  f"{{pct_nav}} <= {NAV_HIGH_THRESHOLD}"),
+                "column_id": "pct_nav"},
+         "backgroundColor": "#FFF3CD",
+         "color": "#856404", "fontWeight": "600"},
+    ]
+
+
+def _pnl_style_conditional(column_id: str):
+    """Green/red coloring for any signed-numeric column id."""
+    return [
+        {"if": {"filter_query": f"{{{column_id}}} > 0",
+                "column_id": column_id},
+         "color": "var(--pos)", "fontWeight": "600"},
+        {"if": {"filter_query": f"{{{column_id}}} < 0",
+                "column_id": column_id},
+         "color": "var(--neg)", "fontWeight": "600"},
+    ]
+
+
+def _dollar_greek_color_via_hidden_num(display_id: str, num_id: str):
+    """Color a formatted-string greek column by reading its hidden numeric
+    twin column. Returns 2 style_data_conditional entries.
+    """
+    return [
+        {"if": {"filter_query": f"{{{num_id}}} > 0",
+                "column_id": display_id},
+         "color": "var(--pos)", "fontWeight": "600"},
+        {"if": {"filter_query": f"{{{num_id}}} < 0",
+                "column_id": display_id},
+         "color": "var(--neg)", "fontWeight": "600"},
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Number formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -568,21 +642,68 @@ def _signals_table(signals_by_ticker, snapshot_df, composite_scores):
     ]
     cols_present = [c for c in cols_in_order if any(c in r for r in records)]
 
-    score_cond = []
-    for thresh, bg in [(0, "#FDECEA"), (30, "#FFF3CD"), (50, "#FFFDF5"),
-                       (70, "#E6F4EA"), (85, "#D4F0DA")]:
-        score_cond.append({
-            "if": {"filter_query": f"{{score}} >= {thresh}",
-                   "column_id": "score"},
-            "backgroundColor": bg,
-            "fontWeight": "600",
-        })
+    # Harder score bands — single-color step ramp instead of 5-step gradient
+    score_cond = [
+        {"if": {"filter_query": "{score} >= 80",
+                "column_id": "score"},
+         "backgroundColor": "#1E7E34", "color": "white",
+         "fontWeight": "700"},
+        {"if": {"filter_query": "{score} >= 70 && {score} < 80",
+                "column_id": "score"},
+         "backgroundColor": "#A3D9A5",
+         "color": "var(--ubs-charcoal)", "fontWeight": "700"},
+        {"if": {"filter_query": "{score} >= 50 && {score} < 70",
+                "column_id": "score"},
+         "backgroundColor": "#FFF3CD",
+         "color": "var(--ubs-charcoal)", "fontWeight": "600"},
+        {"if": {"filter_query": "{score} < 50",
+                "column_id": "score"},
+         "backgroundColor": "var(--ubs-grey-100)",
+         "color": "var(--ubs-grey-700)", "fontWeight": "500"},
+    ]
+
+    # Display-name lookup for the signals table headers (v0.10).
+    _SIGNAL_COL_NAMES = {
+        "ticker":              "Ticker",
+        "name":                "Name",
+        "score":               "Score",
+        "score_label":         "Label",
+        "move_vs_iv":          "Move vs IV",
+        "trend_200d":          "Trend 200D",
+        "momentum":            "Momentum",
+        "ytd_performance":     "YTD",
+        "iv_level":            "IV Level",
+        "iv_percentile":       "IV Pctl",
+        "iv_term":             "IV Term",
+        "vol_risk_premium":    "Vol Risk Premium",
+        "earnings_within_30d": "Earnings \u226430D",
+        "rsi_extreme":         "RSI Extreme",
+        "breakout":            "Breakout",
+    }
+    columns = [
+        {"name": _SIGNAL_COL_NAMES.get(c, c.replace("_", " ").title()),
+         "id": c}
+        for c in cols_present
+    ]
+    style_cell_conditional = [
+        {"if": {"column_id": "ticker"},      "minWidth": "120px"},
+        {"if": {"column_id": "name"},        "minWidth": "180px"},
+        {"if": {"column_id": "score"},
+         "minWidth": "70px", "maxWidth": "80px", "textAlign": "center"},
+        {"if": {"column_id": "score_label"},
+         "minWidth": "90px", "maxWidth": "110px"},
+        *[{"if": {"column_id": c}, "minWidth": "110px"} for c in [
+            "move_vs_iv", "trend_200d", "momentum", "ytd_performance",
+            "iv_level", "iv_percentile", "iv_term", "vol_risk_premium",
+            "earnings_within_30d", "rsi_extreme", "breakout",
+        ]],
+    ]
 
     return dash_table.DataTable(
         id="signals-dt",
         data=records,
-        columns=[{"name": c.replace("_", " ").title(), "id": c}
-                 for c in cols_present],
+        columns=columns,
+        style_cell_conditional=style_cell_conditional,
         style_data_conditional=[
             *score_cond,
             {"if": {"filter_query": '{trend_200d} contains "Bullish"',
@@ -612,6 +733,11 @@ def _options_with_greeks_table(greeks, recs_by_ticker, portfolio):
     df = greeks.by_position[
         greeks.by_position["instrument_type"] == "option"
     ].copy()
+
+    # Drop blank rows (NaN bbg_ticker / NaN quantity from upstream)
+    df = df[df["bbg_ticker"].notna() & (df["bbg_ticker"].astype(str).str.strip() != "")
+            & df["quantity"].notna()]
+
     if df.empty:
         return html.Div(
             "No option positions or greeks unavailable.",
@@ -636,8 +762,12 @@ def _options_with_greeks_table(greeks, recs_by_ticker, portfolio):
     for col in ("spot", "delta", "vega", "theta", "gamma"):
         if col in df.columns:
             df[col] = df[col].round(3 if col in ("delta", "gamma") else 2)
+
+    # Keep numeric copies of dollar greeks for filter-query coloring;
+    # display columns are formatted strings.
     for col in ("dollar_delta", "dollar_vega", "dollar_theta", "dollar_gamma"):
         if col in df.columns:
+            df[f"{col}_num"] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: _fmt_dollars(x, signed=True))
 
     cols_in_order = [
@@ -647,13 +777,81 @@ def _options_with_greeks_table(greeks, recs_by_ticker, portfolio):
         "action", "rationale",
     ]
     cols_present = [c for c in cols_in_order if c in df.columns]
+    hidden_num_cols = [c for c in
+                       ("dollar_delta_num", "dollar_vega_num",
+                        "dollar_theta_num", "dollar_gamma_num")
+                       if c in df.columns]
+
+    style_data_conditional = [
+        *_pct_nav_style_conditional(),
+        *_dollar_greek_color_via_hidden_num("dollar_delta", "dollar_delta_num"),
+        *_dollar_greek_color_via_hidden_num("dollar_vega",  "dollar_vega_num"),
+        *_dollar_greek_color_via_hidden_num("dollar_theta", "dollar_theta_num"),
+        *_dollar_greek_color_via_hidden_num("dollar_gamma", "dollar_gamma_num"),
+        *_action_style_conditional(),
+    ]
+
+    _OPTION_COL_NAMES = {
+        "bbg_ticker":         "Ticker",
+        "underlying_ticker":  "Underlying",
+        "right":              "Right",
+        "quantity":           "Qty",
+        "pct_nav":            "% NAV",
+        "spot":               "Spot",
+        "delta":              "Delta",
+        "vega":               "Vega",
+        "theta":              "Theta",
+        "gamma":              "Gamma",
+        "dollar_delta":       "$ Delta",
+        "dollar_vega":        "$ Vega",
+        "dollar_theta":       "$ Theta",
+        "dollar_gamma":       "$ Gamma",
+        "action":             "Action",
+        "rationale":          "Rationale",
+    }
+    columns = [
+        {"name": _OPTION_COL_NAMES.get(c, c), "id": c}
+        for c in cols_present
+    ]
+    option_cell_conditional = [
+        {"if": {"column_id": "bbg_ticker"},        "minWidth": "200px"},
+        {"if": {"column_id": "underlying_ticker"}, "minWidth": "120px"},
+        {"if": {"column_id": "right"},
+         "minWidth": "60px", "maxWidth": "70px", "textAlign": "center"},
+        {"if": {"column_id": "quantity"},
+         "minWidth": "70px", "maxWidth": "90px", "textAlign": "right"},
+        {"if": {"column_id": "pct_nav"},
+         "minWidth": "70px", "maxWidth": "80px", "textAlign": "right"},
+        {"if": {"column_id": "spot"},
+         "minWidth": "80px", "maxWidth": "90px", "textAlign": "right"},
+        {"if": {"column_id": "delta"},
+         "minWidth": "70px", "maxWidth": "85px", "textAlign": "right"},
+        {"if": {"column_id": "vega"},
+         "minWidth": "70px", "maxWidth": "85px", "textAlign": "right"},
+        {"if": {"column_id": "theta"},
+         "minWidth": "70px", "maxWidth": "85px", "textAlign": "right"},
+        {"if": {"column_id": "gamma"},
+         "minWidth": "70px", "maxWidth": "85px", "textAlign": "right"},
+        {"if": {"column_id": "dollar_delta"},
+         "minWidth": "100px", "textAlign": "right"},
+        {"if": {"column_id": "dollar_vega"},
+         "minWidth": "100px", "textAlign": "right"},
+        {"if": {"column_id": "dollar_theta"},
+         "minWidth": "100px", "textAlign": "right"},
+        {"if": {"column_id": "dollar_gamma"},
+         "minWidth": "100px", "textAlign": "right"},
+        {"if": {"column_id": "action"},   "minWidth": "140px"},
+        {"if": {"column_id": "rationale"},
+         "minWidth": "320px", "maxWidth": "600px"},
+    ]
 
     return dash_table.DataTable(
         id="options-dt",
-        data=df[cols_present].to_dict("records"),
-        columns=[{"name": c, "id": c} for c in cols_present],
-        style_data_conditional=_action_color_rules(),
-        style_cell_conditional=_RATIONALE_CELL_COND,
+        data=df[cols_present + hidden_num_cols].to_dict("records"),
+        columns=columns,
+        hidden_columns=hidden_num_cols,
+        style_data_conditional=style_data_conditional,
+        style_cell_conditional=option_cell_conditional,
         **_DATATABLE_COMMON,
     )
 
@@ -692,6 +890,12 @@ def _equity_with_recs_table(portfolio, recs_by_ticker, snapshot_df):
     else:
         df["pct_nav"] = 0.0
 
+    # Keep a numeric companion for unrealized_pnl coloring before
+    # formatting the visible column as a signed-dollar string.
+    if "unrealized_pnl" in df.columns:
+        df["unrealized_pnl_num"] = pd.to_numeric(df["unrealized_pnl"],
+                                                  errors="coerce")
+
     for col in ("market_value", "unrealized_pnl"):
         if col in df.columns:
             df[col] = df[col].apply(
@@ -706,13 +910,59 @@ def _equity_with_recs_table(portfolio, recs_by_ticker, snapshot_df):
         "action", "rationale",
     ]
     cols_present = [c for c in cols_in_order if c in df.columns]
+    hidden_num_cols = [c for c in ("unrealized_pnl_num",) if c in df.columns]
+
+    style_data_conditional = [
+        *_pct_nav_style_conditional(),
+        *_dollar_greek_color_via_hidden_num("unrealized_pnl",
+                                              "unrealized_pnl_num"),
+        *_action_style_conditional(),
+    ]
+
+    _EQUITY_COL_NAMES = {
+        "symbol":         "Symbol",
+        "bbg_ticker":     "BBG Ticker",
+        "region":         "Region",
+        "style":          "Style",
+        "quantity":       "Qty",
+        "price":          "Price",
+        "market_value":   "Market Value",
+        "pct_nav":        "% NAV",
+        "unrealized_pnl": "Unrealized P&L",
+        "action":         "Action",
+        "rationale":      "Rationale",
+    }
+    columns = [
+        {"name": _EQUITY_COL_NAMES.get(c, c), "id": c}
+        for c in cols_present
+    ]
+    equity_cell_conditional = [
+        {"if": {"column_id": "symbol"},     "minWidth": "80px"},
+        {"if": {"column_id": "bbg_ticker"}, "minWidth": "140px"},
+        {"if": {"column_id": "region"},     "minWidth": "70px"},
+        {"if": {"column_id": "style"},      "minWidth": "90px"},
+        {"if": {"column_id": "quantity"},
+         "minWidth": "80px", "textAlign": "right"},
+        {"if": {"column_id": "price"},
+         "minWidth": "80px", "textAlign": "right"},
+        {"if": {"column_id": "market_value"},
+         "minWidth": "120px", "textAlign": "right"},
+        {"if": {"column_id": "pct_nav"},
+         "minWidth": "70px", "maxWidth": "80px", "textAlign": "right"},
+        {"if": {"column_id": "unrealized_pnl"},
+         "minWidth": "120px", "textAlign": "right"},
+        {"if": {"column_id": "action"},     "minWidth": "140px"},
+        {"if": {"column_id": "rationale"},
+         "minWidth": "320px", "maxWidth": "600px"},
+    ]
 
     return dash_table.DataTable(
         id="equity-dt",
-        data=df[cols_present].to_dict("records"),
-        columns=[{"name": c, "id": c} for c in cols_present],
-        style_data_conditional=_action_color_rules(),
-        style_cell_conditional=_RATIONALE_CELL_COND,
+        data=df[cols_present + hidden_num_cols].to_dict("records"),
+        columns=columns,
+        hidden_columns=hidden_num_cols,
+        style_data_conditional=style_data_conditional,
+        style_cell_conditional=equity_cell_conditional,
         **_DATATABLE_COMMON,
     )
 
@@ -766,9 +1016,42 @@ def _underlyings_table(snapshot):
     ]
     data = df[["bbg_ticker"] + [src for src, _ in available]].to_dict("records")
 
+    # Color CHG_PCT_1D and CHG_PCT_YTD if present (column ids are the BBG
+    # field names, which contain dots — escape via the {col} curly syntax).
+    style_data_conditional = []
+    for col in ("CHG_PCT_1D", "CHG_PCT_YTD"):
+        if col in [src for src, _ in available]:
+            style_data_conditional.extend(_pnl_style_conditional(col))
+
+    underlyings_cell_conditional = [
+        {"if": {"column_id": "bbg_ticker"},                 "minWidth": "140px"},
+        {"if": {"column_id": "security_name"},              "minWidth": "180px"},
+        {"if": {"column_id": "GICS_SECTOR_NAME"},           "minWidth": "140px"},
+        {"if": {"column_id": "PX_LAST"},
+         "minWidth": "80px", "textAlign": "right"},
+        {"if": {"column_id": "CHG_PCT_1D"},
+         "minWidth": "80px", "textAlign": "right"},
+        {"if": {"column_id": "CHG_PCT_YTD"},
+         "minWidth": "80px", "textAlign": "right"},
+        {"if": {"column_id": "3MTH_IMPVOL_100.0%MNY_DF"},
+         "minWidth": "90px", "textAlign": "right"},
+        {"if": {"column_id": "6MTH_IMPVOL_100.0%MNY_DF"},
+         "minWidth": "90px", "textAlign": "right"},
+        {"if": {"column_id": "HIGH_52WEEK"},
+         "minWidth": "90px", "textAlign": "right"},
+        {"if": {"column_id": "LOW_52WEEK"},
+         "minWidth": "90px", "textAlign": "right"},
+        {"if": {"column_id": "EQY_DVD_YLD_IND"},
+         "minWidth": "80px", "textAlign": "right"},
+        {"if": {"column_id": "MOV_AVG_200D"},
+         "minWidth": "90px", "textAlign": "right"},
+    ]
+
     return dash_table.DataTable(
         data=data,
         columns=cols,
+        style_cell_conditional=underlyings_cell_conditional,
+        style_data_conditional=style_data_conditional,
         **_DATATABLE_COMMON,
     )
 
@@ -950,7 +1233,7 @@ def _detail_raw_data(snap_row, ticker, kind):
 
 def _detail_composite(composite):
     if composite is None:
-        return html.Div(className="detail-section", children=[
+        return html.Div(className="detail-section composite", children=[
             html.H4("Composite score"),
             html.Div("No composite score.",
                      style={"color": "var(--ubs-grey-500)"}),
@@ -958,18 +1241,21 @@ def _detail_composite(composite):
     rows = [
         html.Div(className="composite-component", children=[
             html.Div(name.replace("_", " ").title(), className="name"),
-            html.Div(f"{c['raw']}", className="raw"),
+            html.Div(f"{c['raw']:.1f}", className="raw"),
             html.Div(html.Div(className="fill",
-                              style={"width": f"{c['raw']}%"}),
+                              style={"width": f"{min(c['raw'], 100)}%"}),
                      className="bar"),
-            html.Div(f"{c['weighted']}", className="weighted"),
+            html.Div(f"{c['weighted']:.2f}", className="weighted"),
         ])
         for name, c in composite.components.items()
     ]
-    return html.Div(className="detail-section", children=[
+    return html.Div(className="detail-section composite", children=[
         html.H4(f"Composite score \u00b7 {composite.label}"),
         html.Div(className="composite-bar", children=[
-            html.Div(f"{composite.total:.0f}", className="total"),
+            html.Div(className="total-block", children=[
+                html.Div(f"{composite.total:.0f}", className="total"),
+                html.Div("/ 100", className="total-sub"),
+            ]),
             html.Div(rows, className="components"),
         ]),
     ])
@@ -1246,7 +1532,7 @@ def build_app() -> dash.Dash:
     )
 
     app = dash.Dash(__name__, suppress_callback_exceptions=True)
-    app.title = "Portfolio Manager"
+    app.title = "Portfolio Manager \u2014 tim \u2014 v0.9"
 
     _register_drilldown_callbacks(app)
 
@@ -1255,25 +1541,32 @@ def build_app() -> dash.Dash:
         html.Div(className="app-header", children=[
             html.H1("Portfolio Manager"),
             html.Div(
-                f"v0.8  \u00b7  client portfolio review  \u00b7  {bbg_status}",
+                f"v0.9  \u00b7  client portfolio review  \u00b7  {bbg_status}",
                 className="meta",
             ),
         ]),
 
-        # 2. Hero metrics
+        # 2. Hero metrics (NAV, P&L, Delta, Beta)
         _hero_strip(portfolio, greeks, diagnostics, all_warnings),
 
-        # 3. 30-second narrative
+        # 3. Aggregate greeks — moved up under hero so the risk context
+        #    sits right next to the headline numbers.
+        html.Div(className="section", children=[
+            html.H2("Aggregate greeks"),
+            _greeks_summary_cards(greeks, portfolio),
+        ]),
+
+        # 4. 30-second narrative
         _narrative_banner(portfolio, greeks, diagnostics, recommendations,
                           themes),
 
-        # 4. Portfolio composition (donut + style + earnings panel)
+        # 5. Portfolio composition (donut + style + earnings panel)
         html.Div(className="section", children=[
             html.H2("Portfolio composition"),
             _composition_row(diagnostics, snapshot.underlyings),
         ]),
 
-        # 5. Holdings tables FIRST (per TV's reorder)
+        # 6. Holdings tables
         html.Div(className="section", children=[
             html.H2("Equity positions"),
             _equity_with_recs_table(portfolio, recs_by_ticker,
@@ -1284,27 +1577,21 @@ def build_app() -> dash.Dash:
             _options_with_greeks_table(greeks, recs_by_ticker, portfolio),
         ]),
 
-        # 6. Signals + composite scores
+        # 7. Signals + composite scores
         html.Div(className="section", children=[
             html.H2("Signals & composite scores"),
             _signals_table(signals_by_ticker, snapshot.underlyings,
                             composite_scores),
         ]),
 
-        # 7. Drill-down panel container + selection store
+        # 8. Drill-down panel container + selection store
         html.Div(id="detail-panel-container"),
         dcc.Store(id="selected-position-store", data=None),
 
-        # 8. Action items
+        # 9. Action items
         html.Div(className="section", children=[
             html.H2("Action items"),
             _action_items_panel(themes),
-        ]),
-
-        # 9. Aggregate greeks
-        html.Div(className="section", children=[
-            html.H2("Aggregate greeks"),
-            _greeks_summary_cards(greeks, portfolio),
         ]),
 
         # 10. Other positions

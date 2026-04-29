@@ -32,7 +32,7 @@ html, body {
 .app-container {
     max-width: none;
     margin: 0;
-    padding: 16px 24px;
+    padding: 20px 36px;
 }
 
 /* Header */
@@ -58,14 +58,14 @@ html, body {
 /* Section spacing & headings */
 .section { margin-bottom: 32px; }
 .section h2 {
-    font-size: 14px;
+    font-size: 18px;
     font-weight: 600;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color: var(--ubs-grey-500);
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--ubs-charcoal);
     margin: 0 0 14px 0;
-    border-bottom: 1px solid var(--ubs-grey-100);
-    padding-bottom: 8px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--ubs-charcoal);
 }
 
 /* Hero metric strip */
@@ -77,27 +77,30 @@ html, body {
 }
 .hero-card {
     background: white;
-    border: 1px solid var(--ubs-grey-100);
+    border: 1px solid var(--ubs-grey-300);
     border-radius: 4px;
-    padding: 16px 18px;
+    padding: 18px 22px;
 }
 .hero-card .label {
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--ubs-grey-500);
-    margin-bottom: 6px;
+    letter-spacing: 0.6px;
+    color: var(--ubs-grey-700);
+    margin-bottom: 8px;
 }
 .hero-card .value {
-    font-size: 26px;
-    font-weight: 300;
+    font-size: 32px;
+    font-weight: 600;
     letter-spacing: -0.5px;
     color: var(--ubs-charcoal);
+    line-height: 1.1;
 }
 .hero-card .sub {
-    font-size: 11px;
-    color: var(--ubs-grey-500);
-    margin-top: 4px;
+    font-size: 12px;
+    color: var(--ubs-grey-700);
+    margin-top: 6px;
+    font-weight: 500;
 }
 .hero-card.pos .value { color: var(--pos); }
 .hero-card.neg .value { color: var(--neg); }
@@ -105,15 +108,19 @@ html, body {
 /* Narrative banner */
 .narrative {
     background: linear-gradient(180deg, #FFFFFF 0%, var(--ubs-grey-50) 100%);
-    border-left: 4px solid var(--ubs-red);
-    padding: 16px 20px;
+    border-left: 5px solid var(--ubs-red);
+    padding: 18px 22px;
     margin-bottom: 24px;
     border-radius: 0 4px 4px 0;
-    font-size: 15px;
+    font-size: 16px;
     line-height: 1.55;
     color: var(--ubs-charcoal);
+    font-weight: 500;
 }
-.narrative strong { color: var(--ubs-red); font-weight: 600; }
+.narrative strong {
+    color: var(--ubs-red);
+    font-weight: 700;
+}
 
 /* Composition row */
 .composition-row {
@@ -145,24 +152,26 @@ html, body {
 }
 .metric-card {
     background: white;
-    border: 1px solid var(--ubs-grey-100);
+    border: 1px solid var(--ubs-grey-300);
     border-radius: 4px;
-    padding: 12px 14px;
+    padding: 14px 16px;
 }
 .metric-card .label {
-    font-size: 10px;
+    font-size: 11px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--ubs-grey-500);
+    letter-spacing: 0.6px;
+    color: var(--ubs-grey-700);
 }
 .metric-card .value {
-    font-size: 16px;
-    font-weight: 500;
-    margin: 4px 0 2px 0;
+    font-size: 22px;
+    font-weight: 600;
+    margin: 6px 0 4px 0;
+    color: var(--ubs-charcoal);
 }
 .metric-card .sub {
-    font-size: 11px;
-    color: var(--ubs-grey-500);
+    font-size: 12px;
+    color: var(--ubs-grey-700);
 }
 
 /* Action Items */
@@ -209,24 +218,40 @@ html, body {
 
 /* DataTable density pass */
 .dash-table-container .dash-spreadsheet-container {
-    border: 1px solid var(--ubs-grey-100) !important;
+    border: 1px solid var(--ubs-grey-300) !important;
     border-radius: 4px;
-}
-.dash-table-container td {
-    font-size: 13px !important;
-    padding: 6px 10px !important;
-    white-space: normal !important;
-    height: auto !important;
-    line-height: 1.4 !important;
 }
 .dash-table-container th {
     background: var(--ubs-grey-50) !important;
-    font-weight: 600 !important;
+    font-weight: 700 !important;
     font-size: 12px !important;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--ubs-grey-700) !important;
-    padding: 8px 10px !important;
+    letter-spacing: 0.4px;
+    color: var(--ubs-charcoal) !important;
+    padding: 10px 12px !important;
+    border-bottom: 2px solid var(--ubs-charcoal) !important;
+}
+.dash-table-container td {
+    font-size: 13px !important;
+    padding: 8px 12px !important;
+    white-space: normal !important;
+    height: auto !important;
+    line-height: 1.4 !important;
+    color: var(--ubs-charcoal);
+    border-bottom: 1px solid var(--ubs-grey-100) !important;
+}
+
+/* Row hover */
+.dash-table-container tr:hover td {
+    background: #FAF8F4 !important;
+}
+
+/* Active cell — replace the default pink box */
+.dash-table-container td.cell--selected,
+.dash-table-container td.focused {
+    background: #FFF8E1 !important;
+    box-shadow: inset 0 0 0 2px var(--ubs-red) !important;
+    outline: none !important;
 }
 
 /* Bloomberg disclosure */
@@ -285,8 +310,8 @@ html, body {
     border-bottom: 1px solid var(--ubs-grey-100);
 }
 .detail-panel-header .title {
-    font-size: 18px;
-    font-weight: 500;
+    font-size: 20px;
+    font-weight: 600;
 }
 .detail-panel-header .close-btn {
     background: none;
@@ -309,14 +334,14 @@ html, body {
     margin-bottom: 20px;
 }
 .detail-section h4 {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--ubs-grey-500);
-    margin: 0 0 8px 0;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--ubs-grey-100);
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ubs-charcoal);
+    margin: 0 0 10px 0;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--ubs-grey-300);
 }
 .detail-grid-2 {
     display: grid;
@@ -333,14 +358,17 @@ html, body {
 .kv-row {
     display: flex;
     justify-content: space-between;
-    padding: 4px 0;
-    font-size: 13px;
-    border-bottom: 1px dotted var(--ubs-grey-100);
+    padding: 6px 0;
+    font-size: 14px;
+    border-bottom: 1px solid var(--ubs-grey-100);
 }
-.kv-row .k { color: var(--ubs-grey-700); }
+.kv-row .k {
+    color: var(--ubs-charcoal);
+    font-weight: 500;
+}
 .kv-row .v {
     font-family: "Consolas", "Menlo", monospace;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--ubs-charcoal);
 }
 
@@ -359,40 +387,62 @@ html, body {
 .signal-chip.neutral { background: var(--ubs-grey-100); color: var(--ubs-grey-700); }
 .signal-chip.event   { background: #FFF3CD; color: #856404; }
 
-/* Composite score visual */
+/* Composite score visual — compact layout (v0.10) */
 .composite-bar {
     display: flex;
     align-items: center;
-    gap: 14px;
-    margin-top: 6px;
+    margin-top: 2px;
+    gap: 16px;
+}
+.composite-bar .total-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 80px;
+    border-right: 1px solid var(--ubs-grey-300);
+    padding-right: 12px;
+    margin-right: 4px;
 }
 .composite-bar .total {
-    font-size: 28px;
-    font-weight: 300;
+    font-size: 32px;
+    font-weight: 700;
     letter-spacing: -0.5px;
-    min-width: 56px;
+    line-height: 1;
+    color: var(--ubs-charcoal);
+}
+.composite-bar .total-sub {
+    font-size: 11px;
+    color: var(--ubs-grey-500);
+    margin-top: 2px;
 }
 .composite-bar .components {
     flex: 1;
 }
 .composite-component {
     display: grid;
-    grid-template-columns: 140px 60px 1fr 60px;
+    grid-template-columns: 130px 48px 1fr 56px;
     gap: 8px;
     align-items: center;
-    font-size: 12px;
-    margin-bottom: 4px;
+    font-size: 11px;
+    line-height: 1.2;
+    margin-bottom: 1px;
+    padding: 1px 0;
 }
-.composite-component .name { color: var(--ubs-grey-700); }
+.composite-component .name {
+    color: var(--ubs-charcoal);
+    font-weight: 500;
+}
 .composite-component .raw  {
     font-family: "Consolas", monospace;
+    font-size: 11px;
     text-align: right;
-    color: var(--ubs-grey-500);
+    color: var(--ubs-grey-700);
+    font-weight: 600;
 }
 .composite-component .bar  {
-    height: 8px;
+    height: 5px;
     background: var(--ubs-grey-100);
-    border-radius: 4px;
+    border-radius: 2px;
     overflow: hidden;
 }
 .composite-component .bar .fill {
@@ -402,8 +452,31 @@ html, body {
 .composite-component .weighted {
     text-align: right;
     font-weight: 600;
+    font-size: 11px;
     color: var(--ubs-charcoal);
     font-family: "Consolas", monospace;
+}
+
+/* Tighten the section header for the composite block specifically */
+.detail-section.composite h4 {
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+}
+
+/* Allow column headers to wrap onto two lines instead of truncating */
+.dash-table-container .dash-spreadsheet-container th {
+    white-space: normal !important;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+    line-height: 1.2 !important;
+    height: auto !important;
+    vertical-align: bottom !important;
+    min-height: 40px;
+}
+
+/* Ensure horizontal scroll appears when minWidths exceed container */
+.dash-table-container .dash-spreadsheet-inner {
+    overflow-x: auto !important;
 }
 
 /* Earnings panel — replaces the simple list */
