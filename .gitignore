@@ -1,0 +1,40 @@
+# Sensitive data — NEVER commit
+**/Holdings.xlsx
+**/*.holdings.*
+**/data/*.xlsx
+**/data/*.xls
+**/data/*.csv
+client-*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# Logs / debug artifacts
+*.log
+layout.json
+debug_*.txt
+*.pkl
+
+# OS
+desktop.ini

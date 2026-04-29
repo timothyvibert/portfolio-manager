@@ -1,0 +1,19 @@
+# Core framework
+dash>=4.0,<5
+dash-mantine-components>=2.5,<3
+
+# Data & computation
+pandas>=2.0,<3
+numpy>=1.24,<3
+scipy>=1.10,<2
+polars>=0.20
+plotly>=5.0,<6
+
+# Bloomberg adapter
+polars-bloomberg>=0.2
+
+# Data formats & Excel
+openpyxl>=3.1
+
+# Testing
+pytest>=8.0
