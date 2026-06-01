@@ -1,19 +1,9 @@
-# Core framework
-dash>=4.0,<5
-dash-mantine-components>=2.5,<3
+# Portfolio Manager — runtime dependencies
+# Install: pip install -r requirements.txt
 
-# Data & computation
-pandas>=2.0,<3
-numpy>=1.24,<3
-scipy>=1.10,<2
-polars>=0.20
-plotly>=5.0,<6
-
-# Bloomberg adapter
-polars-bloomberg>=0.2
-
-# Data formats & Excel
-openpyxl>=3.1
-
-# Testing
-pytest>=8.0
+dash==4.1.0
+dash-ag-grid==35.2.0
+pandas==2.3.3
+numpy==2.4.4
+openpyxl==3.1.5
+polars-bloomberg==0.5.4

@@ -1,74 +1,115 @@
 # Portfolio Manager
 
-A single-page Dash application for institutional portfolio review. Ingests
-a client holdings spreadsheet, fetches live Bloomberg data, computes
-per-underlying signals plus portfolio diagnostics, and produces grouped
-position-level recommendations themed for client conversations.
+A portfolio review and idea-generation tool for options and equity sales
+trading and advisory. It turns a morning holdings-and-trades extract into a
+cross-account signal blotter and a per-account deep dive, so a desk can triage
+what needs attention and build client conversations from it — fast.
+
+## Overview
+
+Portfolio Manager runs as a local single-page [Dash](https://dash.plotly.com/)
+application. Each morning it ingests a holdings + trades extract, enriches it
+with live Bloomberg data, and runs a **deterministic insight engine** that emits
+pattern-based alerts with a complete audit trail. The result is presented across
+two surfaces:
+
+- **Morning Blotter** — a dense, cross-account grid of every alert, triaged by
+  urgency tier, one row per position. The desk's first stop: what fired
+  overnight and where to act.
+- **Account Deep Dive** — a per-account view: a KPI strip, the full position
+  book with merged alerts, portfolio analytics, and recent trades. The follow-up
+  stop: full context on a single account before a client call.
+
+Both surfaces open the same evidence drawer, so any alert or position is one
+click from its full signal tearsheet and the math behind it.
 
 ## Features
 
-- **Portfolio composition view** — sector concentration donut, style mix,
-  earnings calendar with implied move and average historical move
-- **Live greeks aggregation** — net dollar delta, vega, theta, gamma with
-  NAV-percentage context
-- **11 per-underlying signals** across vol regime (IV percentile, term
-  structure, vol risk premium), trend (200D, momentum, YTD), event pressure
-  (earnings, RSI extremes), and price action (move vs IV, breakout)
-- **Composite score per name** — 5-component weighted score modeled on
-  institutional desk conventions
-- **Themed action items** — recommendations grouped into Yield Enhancement,
-  Risk Mitigation, Dead-Weight Purge, and Tactical Opportunity buckets via
-  19 deterministic rules
-- **Per-position drill-down** — click any row to see raw data, signal
-  derivation math, and the full rationale
+**Insight engine**
+- A library of signals across trend & momentum, volatility, catalysts,
+  sentiment/ratings, position-specifics, and a blended composite score.
+- Pattern detectors turn those signals into tiered alerts — *act today*,
+  *worth raising*, *FYI* — each carrying a complete audit `trace` (every input,
+  its source and as-of, the computation, the thresholds, and the result).
+- Stale or missing inputs are surfaced explicitly; a pattern that depends on a
+  stale signal does not fire.
 
-## Stack
+**Morning Blotter**
+- One row per position with its alerts consolidated; filter by tier, group by
+  account or pattern.
+- Click through to a per-position alert view (every alert stacked, with its
+  rationale and audit trace) or a per-underlying signal tearsheet.
 
-- Python 3.12+
-- Dash + dash-mantine-components (UI)
-- polars-bloomberg (BLPAPI integration)
-- pandas, numpy, scipy (math)
-- Plotly (visualization)
-
-## Setup
-
-Requires a Bloomberg Terminal with BLPAPI available on localhost:8194.
-
-```bash
-conda create -n portfolio-manager python=3.12 -y
-conda activate portfolio-manager
-pip install -r requirements.txt
-```
-
-Place your holdings file at `tim/data/Holdings.xlsx` (gitignored — never
-committed). The expected sheet structure is documented in
-`tim/core/holdings_parser.py`.
-
-## Run
-
-```bash
-launch.bat
-```
-
-The app boots on `http://127.0.0.1:8052/`.
+**Account Deep Dive**
+- KPI strip: NAV, cash %, position/option counts, a net-Greeks one-liner, and
+  per-tier alert counts.
+- Institutional position table across every asset class, with alerts merged in.
+- Analytics: net dollar Greeks, options premium collected-vs-paid split, an
+  expiry ladder (strike-obligation exposure by window), sector breakdown with
+  weighted beta, and top concentrations.
+- The account's full recent trade book, most-recent first.
 
 ## Architecture
 
+A layered, read-only-at-the-edge pipeline:
+
 ```
-tim/
-├── app.py                       Dash entry point, layout assembly
-├── core/
-│   ├── holdings_parser.py       XLSX → typed portfolio dataclass
-│   ├── bloomberg_client.py      polars-bloomberg session + BDP/BDH
-│   ├── portfolio_snapshot.py    Orchestrates underlying + option fetches
-│   ├── portfolio_greeks.py      Net dollar greeks aggregation
-│   ├── portfolio_signals.py     11 signals across 5 categories
-│   ├── portfolio_diagnostics.py Sector / style / beta / earnings
-│   ├── recommender.py           19 deterministic recommendation rules
-│   ├── pitch_synthesizer.py     Theme-grouped action items
-│   ├── composite_score.py       5-component weighted score per underlying
-│   ├── probability.py           Black-Scholes greeks
-│   └── vol_metrics.py           IV percentile, RV, VRP from BDH series
-└── assets/
-    └── style.css                Single stylesheet
+Holdings/trades extract  →  ingest (typed Position model)
+                         →  Bloomberg enrichment + insight engine
+                         →  PortfolioState (single source of truth)
+                         →  UI (Dash + AG Grid) — reads only
 ```
+
+The engine computes everything upstream while building `PortfolioState`; the UI
+layer only reads from it and never recomputes. Data is fetched once per load in
+a single Bloomberg pass and sliced per account.
+
+- **UI:** Dash with [dash-ag-grid](https://dash.plotly.com/dash-ag-grid) for the
+  dense grids.
+- **Market data:** Bloomberg via
+  [polars-bloomberg](https://pypi.org/project/polars-bloomberg/) (BLPAPI).
+- **Data handling:** pandas / numpy; Excel via openpyxl.
+
+The app launches immediately and loads market data after first paint, with a
+loading indicator next to the **Refresh BBG** button; refreshes are
+non-blocking, so the current view stays interactive while new data loads.
+
+## Requirements
+
+- Python 3.12+
+- A Bloomberg Terminal with BLPAPI available (for live enrichment). Without it,
+  the app still runs and renders everything derivable from the extract;
+  Bloomberg-dependent signals are marked unavailable.
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+```
+
+## Running
+
+```bash
+python -m pm.app
+```
+
+Then open <http://127.0.0.1:8062/>. On Windows, `launch.bat` activates the
+environment, frees the port, starts the server, and opens the browser for you.
+
+## Data
+
+Place the morning extract in `pm/data/` (kept local — never committed). It is an
+`.xlsx` workbook with two sheets:
+
+- **Holdings** — one row per position: account, asset class, instrument details
+  (ticker, option type/strike/expiry where applicable), quantity, valuation,
+  market value, cost basis, and unrealized P&L.
+- **Trades** — the trade journal: account, trade date, buy/sell, lifecycle
+  action, instrument details, quantity, and principal.
+
+Column headers are normalized on load; the most recent extract in the folder is
+selected automatically.
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).

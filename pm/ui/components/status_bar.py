@@ -1,0 +1,55 @@
+"""The thin top status strip for the app shell — the LEFT content only.
+
+One line tall, maximum density. Reads everything from the already-loaded
+PortfolioState — no recompute. The Refresh BBG button + loading spinner are a
+persistent cluster owned by the shell (so they survive the async load / refresh
+that replaces this content), not part of what this function returns.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from dash import html
+
+from pm.store.portfolio_state import PortfolioState
+from pm.ui import state_access as sa
+
+
+def render_status_bar(state: Optional[PortfolioState]) -> html.Div:
+    """Render the left side of the status strip. Before data has loaded
+    (state is None) this shows a neutral 'Loading…' line; the async load
+    swaps in the populated line when it completes."""
+    if state is None:
+        return html.Div("Loading portfolio…", className="status-left status-empty")
+
+    fires = sa.all_fires(state)
+    n_t1 = sum(1 for f in fires if f.tier == 1)
+    n_t2 = sum(1 for f in fires if f.tier == 2)
+    n_t3 = sum(1 for f in fires if f.tier == 3)
+    n_positions = sum(len(a.positions) for a in state.accounts.values())
+    # Flagged positions = consolidated blotter rows (one per position with ≥1
+    # alert) — explains why the table shows fewer rows than fires.
+    n_flagged = len({(f.account, f.position_id) for f in fires})
+
+    bbg_cls = "status-bbg-on" if state.bloomberg_ok else "status-bbg-off"
+    bbg_label = "BBG" if state.bloomberg_ok else "BBG offline"
+
+    items = [
+        html.Span(f"Extract {state.extract.extract_ts:%Y-%m-%d %H:%M}",
+                  className="status-item status-strong"),
+        html.Span(f"{len(state.accounts)} accounts", className="status-item"),
+        html.Span(f"{n_positions} positions", className="status-item"),
+        html.Span(className="status-item", children=[
+            html.Span(f"{len(fires)} fires", className="status-strong"),
+            html.Span(f" across {n_flagged} positions", className="status-muted"),
+            html.Span(f" · {n_t1} T1", className="status-tier-1"),
+            html.Span(f" · {n_t2} T2", className="status-tier-2"),
+            html.Span(f" · {n_t3} T3", className="status-tier-3"),
+        ]),
+        html.Span(className="status-item", children=[
+            html.Span("●", className=bbg_cls), html.Span(f" {bbg_label}"),
+        ]),
+        html.Span(f"Refreshed {state.loaded_at:%H:%M:%S}",
+                  className="status-item status-muted", id="status-refreshed"),
+    ]
+    return html.Div(items, className="status-left")

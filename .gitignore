@@ -36,5 +36,22 @@ layout.json
 debug_*.txt
 *.pkl
 
+# Scratch / throwaway discovery work
+pm/_scratch/
+
+# --- Internal / non-public: kept locally, never pushed to the public repo ---
+CLAUDE.md
+requirements-dev.txt
+INVENTORY.md
+pm/**/tests/
+pm/docs/
+pm/_archive_v0_10/
+pm/smoke_phase2.py
+pm/smoke_phase3.py
+# Data dir: placeholders only — no extracts, specs, or inventory
+pm/data/*
+!pm/data/.gitkeep
+!pm/data/README.md
+
 # OS
 desktop.ini
