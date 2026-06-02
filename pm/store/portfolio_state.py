@@ -82,6 +82,10 @@ class AccountState:
     # builds this for the detectors; persisting it lets the signal-sheet UI
     # read Group E without recomputing.
     position_signals: dict = field(default_factory=dict)  # position_id -> SignalDict
+    # Multi-leg structure groupings (covered call, collar, vertical, covered /
+    # cash-secured put, straddle / strangle), detected in the load path after the
+    # engine. The UI reads these and never recomputes. See pm.insight.structures.
+    structures: list = field(default_factory=list)  # list[pm.insight.structures.Structure]
 
 
 @dataclass
@@ -169,10 +173,15 @@ def load_portfolio_state(
         ubs_note_dates_by_ticker=ubs_note_dates,
     )
 
-    # Final step: run the insight engine, which writes signals + fires
-    # onto each AccountState and may append further warnings.
+    # Run the insight engine, which writes signals + fires onto each
+    # AccountState and may append further warnings.
     from pm.insight.engine import run_insight_engine
     run_insight_engine(state)
+
+    # Detect multi-leg structures from the grouped holdings (pure; reads the
+    # built positions, writes Structure proposals onto each AccountState).
+    from pm.insight.structures import run_structure_detection
+    run_structure_detection(state)
 
     return state
 

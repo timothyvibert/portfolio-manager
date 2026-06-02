@@ -1,4 +1,4 @@
-"""V1 pattern detectors — 14 patterns.
+"""V1 pattern detectors — 15 patterns.
 
 Each detector takes a ``PositionContext``-like bundle and a
 ``PatternConfig`` and returns a ``Fire`` (or None / list[Fire] for

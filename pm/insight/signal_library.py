@@ -1,4 +1,4 @@
-"""V1 signal library — 27 signals across groups A–F.
+"""V1 signal library — 28 signals across groups A–F.
 
 Each signal returns a ``SignalValue`` with a canonical audit trace. Stale or
 missing required inputs propagate explicitly: ``value=None, stale=True``, with
