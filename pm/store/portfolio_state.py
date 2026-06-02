@@ -103,7 +103,16 @@ class PortfolioState:
     iv_histories: dict = field(default_factory=dict)        # BBG-ticker -> pd.Series
     ubs_data_by_ticker: dict = field(default_factory=dict)  # BBG-ticker -> dict
     ubs_note_dates_by_ticker: dict = field(default_factory=dict)  # BBG-ticker -> pd.Timestamp | None
-    # Assumed short rate for the deep-ITM short-put carry check (estimate; see config).
+    # Forward dividend forecast per underlying BBG ticker, in the
+    # bloomberg_client.fetch_projected_dividend shape ({next, schedule}). Feeds
+    # the ex-div fire's real-dividend path; empty when BBG is off or unforecast.
+    projected_dividends_by_ticker: dict = field(default_factory=dict)
+    # US Treasury curve (short->long tenor dicts) for the deep-ITM short-put
+    # carry check; the fire picks the tenor nearest each leg's DTE. Empty when
+    # BBG is off — the carry calc then uses the risk_free_rate scalar below.
+    risk_free_curve: list = field(default_factory=list)
+    # BBG-off fallback short rate for the carry check (see config). Used only
+    # when risk_free_curve is empty; the fire flags it as an estimate.
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE
 
 
@@ -141,8 +150,21 @@ def load_portfolio_state(
     )
 
     # Pre-fetch BBG inputs the insight engine consumes (V1: IV history
-    # for B5; UBS analyst override for D1; UBS analyst-note dates for D3).
-    iv_histories, ubs_data, ubs_note_dates = _prefetch_insight_inputs(positions, bbg_ok)
+    # for B5; UBS analyst override for D1; UBS analyst-note dates for D3;
+    # forward dividend forecast for the ex-div fire).
+    iv_histories, ubs_data, ubs_note_dates, projected_dividends = _prefetch_insight_inputs(
+        positions, bbg_ok,
+    )
+
+    # Treasury curve for the carry fire (one BDP round trip). Empty offline →
+    # the carry calc falls back to the DEFAULT_RISK_FREE_RATE scalar.
+    risk_free_curve: list = []
+    if bbg_ok:
+        try:
+            from pm.core.bloomberg_client import fetch_risk_free_curve
+            risk_free_curve = fetch_risk_free_curve() or []
+        except Exception as exc:
+            logger.warning("Treasury-curve prefetch failed: %s", exc)
 
     accounts: dict[str, AccountState] = {}
     for account_id in extract.accounts:
@@ -174,6 +196,8 @@ def load_portfolio_state(
         iv_histories=iv_histories,
         ubs_data_by_ticker=ubs_data,
         ubs_note_dates_by_ticker=ubs_note_dates,
+        projected_dividends_by_ticker=projected_dividends,
+        risk_free_curve=risk_free_curve,
     )
 
     # Run the insight engine, which writes signals + fires onto each
@@ -224,19 +248,22 @@ def refresh_portfolio_state(
 
 def _prefetch_insight_inputs(
     positions: list[Position], bbg_ok: bool,
-) -> tuple[dict, dict, dict]:
+) -> tuple[dict, dict, dict, dict]:
     """Fetch the BBG-derived inputs the insight engine needs:
       - 1Y IV history per unique underlying BBG ticker (B5)
       - UBS-overridden analyst data per unique underlying (D1)
       - UBS analyst-note dates per unique underlying (D3)
-    Returns (iv_histories, ubs_data_by_ticker, ubs_note_dates_by_ticker).
-    All three are empty when ``bbg_ok`` is False or no underlyings are present.
+      - forward dividend forecast per unique underlying (ex-div fire / P7)
+    Returns (iv_histories, ubs_data_by_ticker, ubs_note_dates_by_ticker,
+    projected_dividends_by_ticker). All four are empty when ``bbg_ok`` is False
+    or no underlyings are present.
     """
     iv_histories: dict = {}
     ubs_data: dict = {}
     ubs_note_dates: dict = {}
+    projected_dividends: dict = {}
     if not bbg_ok:
-        return iv_histories, ubs_data, ubs_note_dates
+        return iv_histories, ubs_data, ubs_note_dates, projected_dividends
 
     tickers: set[str] = set()
     for p in positions:
@@ -246,7 +273,7 @@ def _prefetch_insight_inputs(
             tickers.add(p.underlying_bbg_ticker)
 
     if not tickers:
-        return iv_histories, ubs_data, ubs_note_dates
+        return iv_histories, ubs_data, ubs_note_dates, projected_dividends
 
     # IV histories — one BDH call across all tickers
     try:
@@ -282,7 +309,22 @@ def _prefetch_insight_inputs(
     except Exception as exc:
         logger.warning("Insight prefetch: UBS analyst-note dates failed: %s", exc)
 
-    return iv_histories, ubs_data, ubs_note_dates
+    # Forward dividend forecast — one fetch_projected_dividend per ticker. The
+    # call is currently cheap (the BDS bulk parse lands with the terminal probe);
+    # if polars_bloomberg gains a multi-security BDS path, batch this — the
+    # per-ticker serial cost grows with the underlying count (~20-30 names).
+    try:
+        from pm.core.bloomberg_client import fetch_projected_dividend
+        for t in sorted(tickers):
+            try:
+                projected_dividends[t] = fetch_projected_dividend(t) or {}
+            except Exception as exc:
+                logger.warning("Insight prefetch: projected dividend for %s failed: %s", t, exc)
+                projected_dividends[t] = {}
+    except Exception as exc:
+        logger.warning("Insight prefetch: projected dividend fetch wrapper failed: %s", exc)
+
+    return iv_histories, ubs_data, ubs_note_dates, projected_dividends
 
 
 # ---------------------------------------------------------------------------

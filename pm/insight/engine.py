@@ -91,6 +91,7 @@ def run_insight_engine(
     iv_histories = getattr(state, "iv_histories", {}) or {}
     ubs_data_by_ticker = getattr(state, "ubs_data_by_ticker", {}) or {}
     ubs_note_dates_by_ticker = getattr(state, "ubs_note_dates_by_ticker", {}) or {}
+    projected_dividends_by_ticker = getattr(state, "projected_dividends_by_ticker", {}) or {}
 
     for account_id, account_state in state.accounts.items():
         # ---- Stage 1: compute per-underlying signals ----------------------
@@ -101,6 +102,7 @@ def run_insight_engine(
             iv_hist = iv_histories.get(bbg) if bbg else None
             ubs = ubs_data_by_ticker.get(bbg) if bbg else None
             ubs_note = ubs_note_dates_by_ticker.get(bbg) if bbg else None
+            projected_div = projected_dividends_by_ticker.get(bbg) if bbg else None
             legacy = (account_state.signals_by_ticker.get(bbg)
                       if bbg and hasattr(account_state, "signals_by_ticker") else None)
             sig_dict = compute_signals_for_underlying(
@@ -112,6 +114,7 @@ def run_insight_engine(
                 ubs_analyst_data=ubs,
                 legacy_signals=legacy,
                 ubs_note_date=ubs_note,
+                projected_dividend=projected_div,
             )
             underlying_signals[symbol] = sig_dict
 

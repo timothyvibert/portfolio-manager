@@ -53,7 +53,8 @@ class Fire:
 
 
 # ---------------------------------------------------------------------------
-# PatternConfig (defaults per Part 3.6; p9 widened to calendar approximation)
+# PatternConfig — all pattern thresholds (p9 uses a calendar-day approximation
+# of the "≤10 business days" rule; see p9_fresh_window_days).
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -105,7 +106,7 @@ class PatternConfig:
 
 
 # ---------------------------------------------------------------------------
-# Tier mapping (Part 2 metadata)
+# Tier mapping: pattern_id -> (pattern_name, tier)
 # ---------------------------------------------------------------------------
 
 PATTERN_META: dict[str, tuple[str, int]] = {
@@ -573,29 +574,41 @@ def detect_p7(
     if not (0 <= days_to_exdiv <= config.p7_exdiv_window_days):
         return None
 
-    # Estimate dividend amount from DVD_YLD (annual) × spot / 4 (quarterly).
-    snap_dvd_yld = signals.get("ubs_rating_and_target")
     spot = T.TEMPLATE_VARIABLE_REGISTRY["spot"](
         T.TemplateContext(position=position, account_state=account_state,
                             signals=signals, config=config)
     )
-    # Read DVD_YLD from any signal trace that captured it (best-effort).
-    dvd_yld = None
-    for sid in ("days_to_ex_div", "spot_vs_50d_ma"):
-        sv = signals.get(sid)
-        if sv:
-            for k, v in (sv.trace or {}).get("inputs", {}).items():
-                if k == "DVD_YLD":
-                    dvd_yld = v.get("value")
-                    break
-    # If we still don't have it, estimate from EQY_DVD_YLD_IND via a fallback search.
-    # For V1 we accept that dividend_amount may be unavailable → skip per spec.
-    if dvd_yld is None or spot is None:
+    if spot is None:
         return None
-    try:
-        dividend_amount = float(spot) * float(dvd_yld) / 100.0 / 4.0  # quarterly heuristic
-    except (TypeError, ValueError):
+
+    # Dividend amount: prefer a real Bloomberg forward projection; else estimate
+    # from DVD_YLD (annual yield × spot / 4, quarterly). Both ride in the
+    # days_to_ex_div / spot_vs_50d_ma traces, recorded upstream in the library.
+    def _from_trace(input_name: str) -> Any:
+        for sid in ("days_to_ex_div", "spot_vs_50d_ma"):
+            sv = signals.get(sid)
+            entry = ((getattr(sv, "trace", {}) or {}).get("inputs", {}).get(input_name)
+                     if sv else None)
+            if entry and entry.get("value") is not None:
+                return entry.get("value")
         return None
+
+    projected_dps = _from_trace("projected_dividend")
+    if projected_dps is not None:
+        try:
+            dividend_amount = float(projected_dps)
+        except (TypeError, ValueError):
+            return None
+        dividend_source = "projected"
+    else:
+        dvd_yld = _from_trace("DVD_YLD")
+        if dvd_yld is None:
+            return None
+        try:
+            dividend_amount = float(spot) * float(dvd_yld) / 100.0 / 4.0  # quarterly heuristic
+        except (TypeError, ValueError):
+            return None
+        dividend_source = "heuristic"
 
     # Estimate extrinsic per contract.
     mv = position.market_value or 0
@@ -614,10 +627,14 @@ def detect_p7(
         "dividend_amount": round(dividend_amount, 2),
         "extrinsic": round(extrinsic, 2),
     }
+    # Source-aware copy: a Bloomberg projection is defensible as projected; the
+    # yield estimate must say it is estimated (surface-the-uncertainty standard).
+    template = (T.P7_RATIONALE_TEMPLATE if dividend_source == "projected"
+                else T.P7_RATIONALE_TEMPLATE_HEURISTIC)
     ctx = T.TemplateContext(position=position, account_state=account_state,
                               signals=signals, config=config)
     label, lv = T.resolve_variables(T.P7_LABEL_TEMPLATE, ctx, extras)
-    rationale, rv = T.resolve_variables(T.P7_RATIONALE_TEMPLATE, ctx, extras)
+    rationale, rv = T.resolve_variables(template, ctx, extras)
     trace = _build_trace(
         inputs_from_signals=["option_moneyness", "days_to_ex_div", "iv_3m_atm"],
         signals=signals,
@@ -626,11 +643,11 @@ def detect_p7(
         config=config,
         thresholds_used={"exdiv_window_days": config.p7_exdiv_window_days},
         computation=("ITM short call AND ex-div ≤7 BD AND extrinsic estimate "
-                      "(max(0, |MV|/(qty*100) − max(0, spot−strike))) < "
-                      "div_amount estimate (spot × DVD_YLD/100 / 4)"),
+                      "(max(0, |MV|/(qty×100) − max(0, spot−strike))) < dividend "
+                      "(Bloomberg projection when available, else spot × DVD_YLD/100 / 4)"),
         fire_result={
-            "extrinsic_estimate": extrinsic, "dividend_estimate": dividend_amount,
-            "fired": True,
+            "extrinsic_estimate": extrinsic, "dividend": dividend_amount,
+            "dividend_source": dividend_source, "fired": True,
         },
         template_variables={**lv, **rv},
         extras=extras,

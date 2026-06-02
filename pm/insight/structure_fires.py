@@ -6,16 +6,18 @@ holdings, an assumed short rate, and an as-of date — the same inputs the engin
 P7 already consume — and appends ``Fire`` objects to each ``AccountState``. The UI
 reads them; nothing recomputes downstream.
 
-Only desk-grade triggers fire. Each fire carries structure context. Where a trigger
-rests on an estimated input (the ex-div dividend, the carry rate) the copy says so.
-Contested mechanical conventions (the 21-DTE window, "50% of max profit", "75–85% of
-width") are deliberately NOT triggers here — they belong on a card as context only.
+Only desk-grade triggers fire. Each fire carries structure context. The carry input
+is source-aware: a live treasury-curve rate is stated plainly, a fallback scalar rate
+is flagged as estimated. Contested mechanical conventions (the 21-DTE window, "50% of
+max profit", "75–85% of width") are deliberately NOT triggers here — they belong on a
+card as context only.
 """
 from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Optional
 
+from pm.core.bloomberg_client import pick_rate_for_dte
 from pm.insight import structures as S
 from pm.insight.patterns import Fire
 
@@ -104,7 +106,7 @@ def _fire(pattern_id, account, position, underlying, label, rationale, trace, fi
 # ---------------------------------------------------------------------------
 # Per-structure fires
 # ---------------------------------------------------------------------------
-def _fires_for_structure(account_state, st, by_id, rate, as_of, fired_at) -> list[Fire]:
+def _fires_for_structure(account_state, st, by_id, rate_curve, rate_fallback, as_of, fired_at) -> list[Fire]:
     account, u = st.account, st.underlying
     confirmed = st.status in _CONFIRMED
     out: list[Fire] = []
@@ -140,20 +142,33 @@ def _fires_for_structure(account_state, st, by_id, rate, as_of, fired_at) -> lis
             if intrinsic <= 0:                    # not ITM → no early-exercise pressure
                 continue
             extrinsic = max(0.0, mark - intrinsic)
+            # Rate nearest this leg's DTE from the live treasury curve; else the
+            # BBG-off fallback scalar (flagged as an estimate in the copy).
+            tenor = pick_rate_for_dte(rate_curve, dte)
+            if tenor is not None:
+                rate, rate_live, rate_ticker, rate_label = tenor["rate"], True, tenor["ticker"], tenor["label"]
+            else:
+                rate, rate_live, rate_ticker, rate_label = rate_fallback, False, None, None
             carry = strike * rate * (dte / 365.0)
             if extrinsic < carry:
+                if rate_live:
+                    rate_phrase = f"the {rate_label} treasury rate, {rate*100:.1f}%"
+                    rate_src = f"BBG:{rate_ticker} (USGG curve)"
+                else:
+                    rate_phrase = f"an estimated {rate*100:.1f}% rate"
+                    rate_src = "config:DEFAULT_RISK_FREE_RATE (estimate)"
                 out.append(_fire("P17", account, pos, u,
                     f"{u} short put ${strike:g} — carry assignment risk",
                     (f"Deep-ITM short put behind your {u} {_struct_word(st.type)}: remaining time "
                      f"value {_money(extrinsic)} is below the carry on the strike (~{_money(carry)}, "
-                     f"based on an estimated {rate*100:.1f}% rate). Carry favours early assignment — "
+                     f"based on {rate_phrase}). Carry favours early assignment — "
                      f"plan to roll down/out or accept the stock rather than rely on time decay."),
                     _trace({"spot": {"value": spot, "source": "BBG:PX_LAST"},
                             "put_mark": {"value": mark, "source": "computed:|MV|/(qty×100)"},
                             "strike": {"value": strike, "source": "ADW:option_strike"},
                             "extrinsic": {"value": round(extrinsic, 2), "source": "computed:mark−intrinsic"},
-                            "carry": {"value": round(carry, 2), "source": "computed:strike×r×t (estimated rate)"},
-                            "rate": {"value": rate, "source": "config:DEFAULT_RISK_FREE_RATE (estimate)"}},
+                            "carry": {"value": round(carry, 2), "source": "computed:strike×r×t"},
+                            "rate": {"value": rate, "source": rate_src}},
                         "ITM short put AND extrinsic (mark − (strike − spot)) < carry (strike × r × DTE/365)",
                         "carry-driven early-exercise risk",
                         {"rate": rate}),
@@ -257,8 +272,9 @@ _ROLE_ACTION = {
 def _attach_structure_context(account_state) -> None:
     """Annotate existing leg fires (P1–P15) whose position is a leg of a CONFIRMED
     structure, so the framing isn't wrong (e.g. P1 'close for margin' on a covered-call
-    short call gains 'short leg of your covered call — roll or accept assignment'). Also
-    flags P7's estimated dividend per the surface-the-uncertainty standard."""
+    short call gains 'short leg of your covered call — roll or accept assignment'). The
+    ex-div fire (P7) carries its own source-aware dividend copy, so it needs no
+    dividend annotation here — only the structure-leg context below."""
     leg_ctx: dict[str, tuple] = {}
     for st in account_state.structures:
         if st.status not in _CONFIRMED:
@@ -276,8 +292,6 @@ def _attach_structure_context(account_state) -> None:
             action = _ROLE_ACTION.get(role, "part of the structure")
             fire.rationale = (fire.rationale or "") + (
                 f"\n\nThis is the {role.replace('_', ' ')} of your {_struct_word(typ)} on {u} — {action}.")
-        if getattr(fire, "pattern_id", "") == "P7" and "estimated dividend" not in (fire.rationale or ""):
-            fire.rationale = (fire.rationale or "") + " (Early-exercise call based on an estimated dividend from yield.)"
 
 
 # ---------------------------------------------------------------------------
@@ -286,15 +300,18 @@ def _attach_structure_context(account_state) -> None:
 def run_structure_fires(state, as_of: Optional[date] = None) -> None:
     """Append structure-aware management fires to every account and annotate
     confirmed-structure leg fires. Reads spot from the snapshot, the option mark from
-    holdings, the assumed short rate from state, and the as-of date (today in the live
-    app). Mutates state in place; the UI reads the fires and never recomputes."""
+    holdings, the treasury curve (carry fire, per-leg DTE) with the scalar rate as the
+    BBG-off fallback, and the as-of date (today in the live app). Mutates state in
+    place; the UI reads the fires and never recomputes."""
     as_of = as_of or date.today()
-    rate = getattr(state, "risk_free_rate", None) or 0.04
+    rate_curve = getattr(state, "risk_free_curve", None) or []
+    rate_fallback = getattr(state, "risk_free_rate", None) or 0.04
     fired_at = getattr(state, "loaded_at", None) or datetime.now()
     for account_state in state.accounts.values():
         by_id = {p.position_id: p for p in account_state.positions}
         new_fires: list[Fire] = []
         for st in account_state.structures:
-            new_fires.extend(_fires_for_structure(account_state, st, by_id, rate, as_of, fired_at))
+            new_fires.extend(_fires_for_structure(
+                account_state, st, by_id, rate_curve, rate_fallback, as_of, fired_at))
         account_state.fires.extend(new_fires)
         _attach_structure_context(account_state)

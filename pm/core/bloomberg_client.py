@@ -4,15 +4,19 @@ A thin wrapper over ``polars_bloomberg`` (BLPAPI). Provides:
   * a session context manager + lazy ``polars_bloomberg`` import,
   * ``fetch_spot``, ``fetch_underlying_snapshot``, ``fetch_underlying_snapshots``,
   * ``fetch_option_snapshot``, ``fetch_option_snapshots``,
-  * ``fetch_risk_free_rate`` (treasury picker),
+  * ``fetch_risk_free_rate`` (single-tenor treasury picker) +
+    ``fetch_risk_free_curve`` / ``pick_rate_for_dte`` (full UST curve for the
+    carry fire and layer-2 pricing),
+  * ``fetch_projected_dividend`` (forward dividend forecast),
   * ``fetch_ubs_analyst_data`` (BE998=UBS analyst-data override),
   * ``is_bloomberg_available`` (startup probe).
 
-A few helpers are shipped as safe-default stubs and return empty/default
-results until their BDS/BQL-backed implementations are enabled
-(``fetch_projected_dividend``, ``fetch_vol_surface``, ``bql_query``,
-``validate_tickers`` and the option-resolver helpers); ``fetch_underlying_snapshot``
-tolerates the dividend stub returning a default.
+``fetch_projected_dividend`` returns the forward dividend forecast in a fixed
+shape; its bulk Bloomberg parse (BDS BDVD_ALL_PROJECTIONS) is keyed to the
+terminal-confirmed column layout and, until that lands, returns no forecast so
+the ex-div fire degrades to the DVD_YLD yield heuristic. ``fetch_vol_surface``,
+``bql_query``, ``validate_tickers`` and the option-resolver helpers remain
+safe-default helpers pending their own implementations.
 """
 from __future__ import annotations
 
@@ -222,13 +226,12 @@ def fetch_underlying_snapshot(ticker: str) -> pd.Series:
     record["earnings_related_implied_move"] = _clean_value(
         record.get("EARNINGS_RELATED_IMPLIED_MOVE")
     )
-    bds_dividend = fetch_projected_dividend(ticker)
+    projection = fetch_projected_dividend(ticker)
+    next_div = projection.get("next") or {}
     bdp_ex_div_date = get_next_dividend_date(ticker, snapshot=record.to_dict())
-    ex_div_date = bds_dividend.get("ex_div_date") or bdp_ex_div_date
-    record["ex_div_date"] = ex_div_date
-    record["projected_dividend"] = bds_dividend.get("projected_dividend")
-    record["dividend_status"] = bds_dividend.get("dividend_status")
-    record["dividend_debug"] = bds_dividend.get("debug") or {}
+    record["ex_div_date"] = next_div.get("ex_date") or bdp_ex_div_date
+    record["projected_dividend"] = next_div.get("dps")
+    record["dividend_schedule"] = projection.get("schedule") or []
     record["mov_avg_200d"] = _clean_value(record.get("MOV_AVG_200D"))
     record["put_call_oi_ratio"] = _clean_value(record.get("PUT_CALL_OPEN_INTEREST_RATIO"))
     record["put_call_vol_ratio"] = _clean_value(record.get("PUT_CALL_VOLUME_RATIO_CUR_DAY"))
@@ -324,6 +327,54 @@ def fetch_risk_free_rate(dte: int) -> dict:
     except Exception:
         logger.warning("Risk-free rate lookup failed, using default")
         return dict(_RFR_DEFAULT)
+
+
+def fetch_risk_free_curve() -> list:
+    """Fetch the whole US Treasury curve (USGG 1M–30Y) in one BDP round trip.
+
+    Returns an ordered list (short to long) of
+    ``{"max_days", "ticker", "label", "rate"}`` where ``rate`` is a decimal
+    (4.5% -> 0.045) or ``None`` when BBG returned nothing for that tenor. The
+    carry fire picks the tenor nearest a leg's DTE via ``pick_rate_for_dte``;
+    the full curve is kept (not collapsed to one point) so layer-2 pricing can
+    reuse it. Returns ``[]`` on any failure — callers fall back to the
+    configured scalar rate. Never raises.
+    """
+    tickers = [t[1] for t in _TREASURY_MAP]
+    try:
+        with with_session() as query:
+            raw = query.bdp(tickers, ["PX_LAST"])
+        df = _ensure_security_column(_to_pandas(raw))
+    except Exception:
+        logger.warning("Treasury-curve fetch failed, falling back to scalar rate")
+        return []
+    if df.empty or "PX_LAST" not in df.columns:
+        return []
+    px_by_ticker = {row.get("security"): row.get("PX_LAST") for _, row in df.iterrows()}
+    curve: list = []
+    for max_days, ticker, label in _TREASURY_MAP:
+        px = px_by_ticker.get(ticker)
+        rate = None
+        if px is not None and not pd.isna(px):
+            try:
+                rate = float(px) / 100.0
+            except (TypeError, ValueError):
+                rate = None
+        curve.append({"max_days": max_days, "ticker": ticker, "label": label, "rate": rate})
+    return curve
+
+
+def pick_rate_for_dte(curve: list, dte: Optional[int]) -> Optional[dict]:
+    """Pick the curve tenor nearest *dte*: the first bucket whose ``max_days`` is
+    >= dte (same bucketing as ``fetch_risk_free_rate``), else the longest tenor.
+    Skips tenors BBG left without a rate. Returns the tenor dict (with a non-None
+    ``rate``) or ``None`` when the curve is empty / has no usable rate."""
+    if not curve or dte is None or dte <= 0:
+        return None
+    pick = next((t for t in curve if dte <= t.get("max_days", 0)), curve[-1])
+    if pick.get("rate") is None:
+        pick = next((t for t in curve if t.get("rate") is not None), None)
+    return pick if (pick and pick.get("rate") is not None) else None
 
 
 # ---------------------------------------------------------------------------
@@ -443,21 +494,71 @@ def get_next_dividend_date(
 
 
 # ---------------------------------------------------------------------------
-# fetch_projected_dividend STUB — BDS-backed implementation not enabled
+# Projected dividends — Bloomberg Dividend Forecast (BDS BDVD_ALL_PROJECTIONS)
 # ---------------------------------------------------------------------------
+# fetch_projected_dividend returns one fixed shape so callers never branch on
+# source:
+#   {"next": {"ex_date": date|None, "declared_date": date|None,
+#             "dps": float|None} | None,
+#    "schedule": [{"ex_date": date, "dps": float}, ...]}   # forward-ordered
+# The bulk BDS parse fills next + the full forward schedule; the single-value
+# BDP estimate fills next only (schedule stays []). The ex-div fire (P7) reads
+# next.dps; when it is absent the fire falls back to the DVD_YLD yield heuristic,
+# so a missing forecast degrades gracefully. Layer-2 pricing will consume the
+# full schedule.
+
+def _empty_projection() -> Dict[str, object]:
+    return {"next": None, "schedule": []}
+
 
 def fetch_projected_dividend(ticker: str) -> Dict[str, object]:
-    """Stub. The BDS-backed implementation (with ``_fetch_bds_rows`` /
-    ``_parse_bds_dividend_rows`` / ``fetch_dividend_sum_to_expiry``) is not
-    enabled. ``fetch_underlying_snapshot`` calls this; returning safe defaults
-    lets it run without pulling in BDS.
+    """Forward dividend forecast for *ticker* in the fixed
+    ``{"next": {...}, "schedule": [...]}`` shape documented above.
+
+    Order of preference: the BDS bulk schedule (BDVD_ALL_PROJECTIONS, mnemonic
+    DV140) for the full forward set, then the single-value BDP estimate for a
+    next-only forecast, then the empty shape. Never raises.
     """
-    return {
-        "ex_div_date": None,
-        "projected_dividend": None,
-        "dividend_status": None,
-        "debug": {},
-    }
+    if not ticker:
+        return _empty_projection()
+    schedule = _fetch_bdvd_schedule(ticker)
+    if schedule:
+        first = schedule[0]
+        return {
+            "next": {"ex_date": first.get("ex_date"),
+                     "declared_date": first.get("declared_date"),
+                     "dps": first.get("dps")},
+            "schedule": [{"ex_date": r.get("ex_date"), "dps": r.get("dps")}
+                         for r in schedule],
+        }
+    next_div = _fetch_bdvd_next_estimate(ticker)
+    if next_div and next_div.get("dps") is not None:
+        return {"next": next_div, "schedule": []}
+    return _empty_projection()
+
+
+def _fetch_bdvd_schedule(ticker: str) -> list:
+    """Full forward dividend schedule from BDS BDVD_ALL_PROJECTIONS, ex-date
+    ascending: ``[{"ex_date", "declared_date", "dps"}, ...]``.
+
+    The BDS response column names/order are confirmed on the terminal via
+    ``pm/_scratch/_bdvd_probe.py``; the row parser keys to that confirmed layout
+    and drops in here behind this interface. Until then this returns ``[]`` so
+    the ex-div fire uses the yield heuristic. Never raises.
+    """
+    return []
+
+
+def _fetch_bdvd_next_estimate(ticker: str) -> Optional[Dict[str, object]]:
+    """Single next projected dividend (``{"ex_date", "declared_date", "dps"}``)
+    from the BDP estimate fields (BDVD_NEXT_EST_EX_DT / BDVD_NEXT_EST_DECL_DT +
+    the next per-share amount), used as a next-only fallback when the bulk
+    schedule is unavailable.
+
+    The per-share-amount token is confirmed via the same terminal probe; until
+    then this returns ``None``. Never raises.
+    """
+    return None
 
 
 # ---------------------------------------------------------------------------

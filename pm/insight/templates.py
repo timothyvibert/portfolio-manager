@@ -395,15 +395,26 @@ P6_RATIONALE_TEMPLATE_NO_IV = (
 )
 
 # ----- P7 -----
+# Two rationale variants by dividend source (detect_p7 selects): the live one
+# names the Bloomberg projection (defensible, worded as projected — not declared);
+# the heuristic one flags the dividend as estimated from yield.
 P7_LABEL_TEMPLATE = (
     "{symbol} short Call ${strike} — ex-div trap ({days_to_exdiv}d, div ${dividend_amount})"
 )
 P7_RATIONALE_TEMPLATE = (
     "{symbol} short call ${strike}: ITM by {moneyness:.1%} with ex-dividend in "
     "{days_to_exdiv} business days ({ex_div_date}). Estimated extrinsic value "
-    "${extrinsic} vs dividend ${dividend_amount} — **early-exercise economics "
-    "favor the holder of the long call**. Action: close or roll up-and-out "
-    "before ex-div to avoid forced assignment."
+    "${extrinsic} vs the Bloomberg projected dividend of ${dividend_amount} on "
+    "{ex_div_date} — **early-exercise economics favor the holder of the long "
+    "call**. Action: close or roll up-and-out before ex-div to avoid forced "
+    "assignment."
+)
+P7_RATIONALE_TEMPLATE_HEURISTIC = (
+    "{symbol} short call ${strike}: ITM by {moneyness:.1%} with ex-dividend in "
+    "{days_to_exdiv} business days ({ex_div_date}). Estimated extrinsic value "
+    "${extrinsic} vs an estimated dividend of ${dividend_amount} (from {symbol}'s "
+    "yield) — **early-exercise economics favor the holder of the long call**. "
+    "Action: close or roll up-and-out before ex-div to avoid forced assignment."
 )
 
 # ----- P8 -----

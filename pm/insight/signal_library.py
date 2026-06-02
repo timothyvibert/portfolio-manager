@@ -734,7 +734,7 @@ def _compute_earnings_implied_move(snap: dict) -> SignalValue:
 _DVD_EX_FIELDS = ("DVD_EX_DT", "EQY_DVD_EX_DT", "DVD_EX_DATE", "EQY_DVD_EX_DATE")
 
 
-def _compute_days_to_ex_div(snap: dict) -> SignalValue:
+def _compute_days_to_ex_div(snap: dict, projected_dividend: Optional[dict] = None) -> SignalValue:
     chosen_field = None
     chosen_date = None
     inputs: dict[str, Any] = {}
@@ -750,6 +750,30 @@ def _compute_days_to_ex_div(snap: dict) -> SignalValue:
         if chosen_date is None:
             chosen_date = parsed
             chosen_field = field_name
+
+    # DVD_YLD rides along in the trace so the ex-div fire can fall back to the
+    # yield heuristic (annual yield × spot / 4) when no forward forecast exists.
+    inputs["DVD_YLD"] = _bbg_input(snap.get("DVD_YLD"), "DVD_YLD")
+
+    # Forward dividend forecast: the precise per-share amount + ex-date the
+    # ex-div fire prefers over the yield heuristic. A projected ex-date is the
+    # forward event, so it governs the days-to-ex-div value when present.
+    next_div = (projected_dividend or {}).get("next") or {}
+    if next_div.get("dps") is not None:
+        inputs["projected_dividend"] = {
+            "value": next_div.get("dps"),
+            "source": "BBG:BDVD_ALL_PROJECTIONS",
+            "as_of": None,
+            "stale": False,
+        }
+    proj_ex = next_div.get("ex_date")
+    if proj_ex is not None:
+        try:
+            chosen_date = pd.to_datetime(proj_ex).date()
+            chosen_field = "BDVD_ALL_PROJECTIONS"
+        except Exception:
+            pass
+
     if chosen_date is None:
         return _stale("days_to_ex_div", "DVD_EX_DT family", inputs=inputs)
     inputs["ex_div_date"] = _computed_input(chosen_date.isoformat(),
@@ -768,8 +792,9 @@ def _compute_days_to_ex_div(snap: dict) -> SignalValue:
         interpretation=interp,
         trace={
             "inputs": inputs,
-            "computation": (f"first populated of {_DVD_EX_FIELDS}; "
-                            "business days from today via pd.bdate_range"),
+            "computation": ("projected ex-date if a forward forecast exists, else "
+                            f"first populated of {_DVD_EX_FIELDS}; business days "
+                            "from today via pd.bdate_range"),
             "thresholds": {"imminent_max": 7},
             "result": bdays,
         },
@@ -1149,8 +1174,8 @@ def _compute_option_moneyness(position: Position, snap: Optional[dict]) -> Signa
 # ===========================================================================
 
 def _compute_composite_score(legacy_signals: Optional[list]) -> SignalValue:
-    """Wraps the existing 5-component composite. Decomposes into the
-    trace per Part 1.F."""
+    """Wraps the existing 5-component composite, decomposing its components
+    into the trace so the score is verifiable from the display."""
     inputs = {
         "legacy_signals_count": {
             "value": 0 if legacy_signals is None else len(legacy_signals),
@@ -1209,6 +1234,7 @@ def compute_signals_for_underlying(
     ubs_analyst_data: Optional[dict],
     legacy_signals: Optional[list] = None,
     ubs_note_date: Optional["pd.Timestamp"] = None,
+    projected_dividend: Optional[dict] = None,
 ) -> SignalDict:
     """Compute all underlying-level signals (groups A–D, F) for one
     underlying in one account context.
@@ -1241,7 +1267,7 @@ def compute_signals_for_underlying(
     # Group C
     out["days_to_earnings"] = _wrap(_compute_days_to_earnings, snap)
     out["earnings_implied_move"] = _wrap(_compute_earnings_implied_move, snap)
-    out["days_to_ex_div"] = _wrap(_compute_days_to_ex_div, snap)
+    out["days_to_ex_div"] = _wrap(_compute_days_to_ex_div, snap, projected_dividend)
     out["dte_nearest_expiry_in_account"] = _wrap(
         _compute_dte_nearest_expiry, positions_in_account, underlying,
     )

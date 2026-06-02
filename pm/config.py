@@ -14,9 +14,10 @@ HOST = "127.0.0.1"
 PORT = 8062
 
 # ---------- Rates ----------
-# Assumed short rate for carry-on-strike in the early-exercise check on deep-ITM
-# short puts. A single scalar, not a curve; the management fire that uses it labels
-# the carry as estimated. A live short rate can replace this later.
+# BBG-off fallback short rate for carry-on-strike in the early-exercise check on
+# deep-ITM short puts. When Bloomberg is up, the live treasury curve (picked per
+# leg DTE) is used instead and this scalar is unused; when it is used, the
+# management fire labels the carry as estimated.
 DEFAULT_RISK_FREE_RATE = 0.04
 
 # ---------- Daily-move alert thresholds ----------

@@ -66,7 +66,7 @@ class Structure:
     underlying: str
     type: str
     confidence_band: str
-    status: str                 # "proposed" until a Part-2 confirm/override flips it
+    status: str                 # "proposed" until a user confirm/override flips it
     legs: list[StructureLeg]
     rationale_trace: dict
     source: str
@@ -88,7 +88,7 @@ def _num(v) -> Optional[float]:
 
 
 def _sid(account: str, underlying: str, typ: str, leg_pids: list[str], suffix: str = "") -> str:
-    """Deterministic id, stable for the same leg-set so Part-2 persistence can key on it."""
+    """Deterministic id, stable for the same leg-set so confirm/override persistence can key on it."""
     base = f"{account}|{underlying}|{typ}|" + ",".join(sorted(leg_pids))
     return base + (f"|{suffix}" if suffix else "")
 
@@ -439,7 +439,7 @@ def run_structure_detection(state) -> None:
     applying any stored confirm/override resolutions. Called in the load path after
     the insight engine; mutates state in place. The pure detector
     (``detect_account_structures``) does no I/O; the stored resolutions are read
-    here, in the load-path orchestrator."""
+    here, in the load path."""
     from pm.store.structure_store import all_resolutions, apply_resolutions
     resolutions = all_resolutions()
     for account_state in state.accounts.values():
