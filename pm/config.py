@@ -13,6 +13,12 @@ ADW_DATA_DIR = DATA_DIR
 HOST = "127.0.0.1"
 PORT = 8062
 
+# ---------- Rates ----------
+# Assumed short rate for carry-on-strike in the early-exercise check on deep-ITM
+# short puts. A single scalar, not a curve; the management fire that uses it labels
+# the carry as estimated. A live short rate can replace this later.
+DEFAULT_RISK_FREE_RATE = 0.04
+
 # ---------- Daily-move alert thresholds ----------
 ALERT_MULTIPLIER = 2.0
 TRADING_DAYS_PER_YEAR = 252

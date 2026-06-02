@@ -18,6 +18,7 @@ from typing import Optional
 
 import pandas as pd
 
+from pm.config import DEFAULT_RISK_FREE_RATE
 from pm.core.bloomberg_client import is_bloomberg_available
 from pm.core.composite_score import compute_all_composite_scores
 from pm.core.pitch_synthesizer import synthesize_pitch
@@ -102,6 +103,8 @@ class PortfolioState:
     iv_histories: dict = field(default_factory=dict)        # BBG-ticker -> pd.Series
     ubs_data_by_ticker: dict = field(default_factory=dict)  # BBG-ticker -> dict
     ubs_note_dates_by_ticker: dict = field(default_factory=dict)  # BBG-ticker -> pd.Timestamp | None
+    # Assumed short rate for the deep-ITM short-put carry check (estimate; see config).
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +185,12 @@ def load_portfolio_state(
     # built positions, writes Structure proposals onto each AccountState).
     from pm.insight.structures import run_structure_detection
     run_structure_detection(state)
+
+    # Structure-aware management fires (coverage breach, ex-div context, carry,
+    # at-cap, pin, collar-monetize). Appends Fires to each AccountState and
+    # annotates leg fires that belong to a confirmed structure.
+    from pm.insight.structure_fires import run_structure_fires
+    run_structure_fires(state)
 
     return state
 
