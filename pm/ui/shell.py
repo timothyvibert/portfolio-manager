@@ -75,6 +75,8 @@ def build_shell(state: Optional[PortfolioState]) -> html.Div:
         # One-shot trigger: fires once shortly after the page mounts, kicking
         # off the (post-render) data load so the UI is reachable immediately.
         dcc.Interval(id="initial-load", interval=300, n_intervals=0, max_intervals=1),
+        # Tab-2 Structures section: grouped vs standalone view.
+        dcc.Store(id="struct-view-mode", data="grouped"),
 
         # Status row: a replaceable left host (swapped by the load callback) +
         # a persistent right cluster (Refresh BBG button + loading spinner) that

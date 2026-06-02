@@ -71,6 +71,7 @@ class Structure:
     rationale_trace: dict
     source: str
     contention_group: Optional[str] = None  # set when ranked alternatives compete
+    resolved_at: Optional[str] = None        # timestamp when the user confirmed/edited it
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +157,62 @@ def _detect_for_underlying(
 
     def puts_long():
         return [o for o in options if o.right == "PUT" and opt_rem[o.position_id] > 0]
+
+    # ---- 0) Contention: covered call vs vertical on a shared short call --------
+    # A short call that long stock can fully cover AND that also pairs with a long
+    # call into a vertical (same expiry, equal size, different strike) admits two
+    # equally-valid readings. With no co-opening trade to favour the vertical and an
+    # exact cover for the covered call, no signal breaks the tie: emit BOTH as ranked
+    # alternatives sharing a contention group, banded low-ambiguous, nothing
+    # auto-selected. The shared short call is the contended leg; the legs are consumed
+    # here so the priority pass below does not silently resolve the tie.
+    if stock_pid is not None and stock_rem > 0:
+        for sc in list(calls_short()):
+            for lc in list(calls_long()):
+                if sc.expiry is None or sc.expiry != lc.expiry or sc.strike == lc.strike:
+                    continue
+                qty = int(abs(opt_rem[sc.position_id]))
+                if qty == 0 or qty != int(abs(opt_rem[lc.position_id])):
+                    continue
+                shares = qty * _MULT
+                if stock_rem < shares:
+                    continue  # stock can't fully cover → not the clean two-reading case
+                if _co_opened([sc.option_contract_key, lc.option_contract_key], trades_df):
+                    continue  # a co-opened vertical is corroborated → let the normal pass form it
+                group = _sid(account, underlying, "contention", [stock_pid, lc.position_id, sc.position_id])
+                # Reading A — covered call: the stock covers the short call (long call is the residual).
+                out.append(Structure(
+                    structure_id=_sid(account, underlying, COVERED_CALL, [stock_pid, sc.position_id], "altA"),
+                    account=account, underlying=underlying, type=COVERED_CALL,
+                    confidence_band=LOW_AMBIGUOUS, status="proposed",
+                    legs=[StructureLeg(stock_pid, shares, "long_stock"),
+                          StructureLeg(sc.position_id, -qty, "short_call")],
+                    rationale_trace=_trace(
+                        {"long_shares": {"value": shares, "source": "ADW:quantity"},
+                         "short_call_strike": {"value": sc.strike, "source": "ADW:option_strike"},
+                         "residual": {"value": f"long {qty} {lc.strike:g}C", "source": "computed:unclaimed leg"}},
+                        f"{shares} sh cover the short {sc.strike:g}C; the long {lc.strike:g}C is the residual",
+                        "covered call (reading A of 2 — long call is the residual)"),
+                    source="detector:contention", contention_group=group))
+                # Reading B — vertical: the two calls are the spread (the stock is the residual).
+                debit = lc.strike < sc.strike
+                out.append(Structure(
+                    structure_id=_sid(account, underlying, VERTICAL, [lc.position_id, sc.position_id], "altB"),
+                    account=account, underlying=underlying, type=VERTICAL,
+                    confidence_band=LOW_AMBIGUOUS, status="proposed",
+                    legs=[StructureLeg(lc.position_id, qty, "long_call"),
+                          StructureLeg(sc.position_id, -qty, "short_call")],
+                    rationale_trace=_trace(
+                        {"long_strike": {"value": lc.strike, "source": "ADW:option_strike"},
+                         "short_strike": {"value": sc.strike, "source": "ADW:option_strike"},
+                         "qty": {"value": qty, "source": "ADW:quantity"},
+                         "residual": {"value": f"long {int(shares)} sh", "source": "computed:unclaimed leg"}},
+                        f"{qty}x {underlying} call vertical {lc.strike:g}/{sc.strike:g}; the {int(shares)} shares are the residual",
+                        f"call vertical ({'debit' if debit else 'credit'}) (reading B of 2 — stock is the residual)"),
+                    source="detector:contention", contention_group=group))
+                stock_rem -= shares
+                opt_rem[sc.position_id] = 0.0
+                opt_rem[lc.position_id] = 0.0
 
     # ---- 1) Collar: long stock + short call + long put, MATCHED expiry --------
     if stock_pid is not None and stock_rem > 0:
@@ -378,7 +435,14 @@ def detect_account_structures(account_state) -> list[Structure]:
 
 
 def run_structure_detection(state) -> None:
-    """Detect structures for every account and attach them to each AccountState.
-    Called in the load path after the insight engine; mutates state in place."""
+    """Detect structures for every account and attach them to each AccountState,
+    applying any stored confirm/override resolutions. Called in the load path after
+    the insight engine; mutates state in place. The pure detector
+    (``detect_account_structures``) does no I/O; the stored resolutions are read
+    here, in the load-path orchestrator."""
+    from pm.store.structure_store import all_resolutions, apply_resolutions
+    resolutions = all_resolutions()
     for account_state in state.accounts.values():
-        account_state.structures = detect_account_structures(account_state)
+        structures = detect_account_structures(account_state)
+        apply_resolutions(account_state.account, structures, resolutions)
+        account_state.structures = structures

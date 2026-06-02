@@ -112,6 +112,33 @@ def reload_state() -> Optional[PortfolioState]:
     return new_state
 
 
+def resolve_structure(
+    account: str, structure_id: str, resolution: str,
+    chosen_type: Optional[str] = None, edited_legs: Optional[list] = None,
+) -> bool:
+    """Confirm / reject / choose-alternative / edit a structure proposal. Writes the
+    resolution through the structure store and re-applies it to the in-memory state's
+    structures (flipping status). Goes through the single state owner here — never a
+    second state holder — and does NOT recompute signals. Returns True on success."""
+    from pm.store import structure_store
+    state = _RUNTIME.get("state")
+    if state is None:
+        return False
+    acc = state.accounts.get(account)
+    if acc is None:
+        return False
+    target = next((s for s in acc.structures if s.structure_id == structure_id), None)
+    if target is None:
+        return False
+    if chosen_type is None and resolution == structure_store.CONFIRMED:
+        chosen_type = target.type  # the confirmed/chosen reading's type
+    leg_pids = structure_store.decision_leg_pids(acc.structures, target)
+    structure_store.save_resolution(
+        account, leg_pids, resolution, chosen_type=chosen_type, edited_legs=edited_legs)
+    structure_store.apply_resolutions(account, acc.structures)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Fire / signal / position lookups
 # ---------------------------------------------------------------------------
