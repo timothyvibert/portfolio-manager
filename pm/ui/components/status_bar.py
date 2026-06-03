@@ -11,6 +11,7 @@ from typing import Optional
 
 from dash import html
 
+from pm.ingest.adw_loader import URGENT_FLAG
 from pm.store.portfolio_state import PortfolioState
 from pm.ui import state_access as sa
 
@@ -52,4 +53,18 @@ def render_status_bar(state: Optional[PortfolioState]) -> html.Div:
         html.Span(f"Refreshed {state.loaded_at:%H:%M:%S}",
                   className="status-item status-muted", id="status-refreshed"),
     ]
+
+    # Load-time ingestion notes (header aliasing, missing/optional columns,
+    # skipped rows). Pure read of state.all_warnings — no recompute. Shown amber
+    # when a load-bearing column or high-impact optional is flagged (urgent
+    # prefix); the full list is in the hover title.
+    notes = list(getattr(state, "all_warnings", []) or [])
+    if notes:
+        urgent = [n for n in notes if n.lstrip().startswith(URGENT_FLAG)]
+        lead = (urgent or notes)[0]
+        extra = len(notes) - 1
+        label = lead + (f"  (+{extra} more)" if extra > 0 else "")
+        cls = "status-item status-load-notes" + (" status-load-urgent" if urgent else "")
+        items.append(html.Span(label, className=cls, title="\n".join(notes)))
+
     return html.Div(items, className="status-left")

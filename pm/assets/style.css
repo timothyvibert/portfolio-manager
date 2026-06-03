@@ -561,6 +561,10 @@ html, body {
 .status-tier-3 { color: var(--pm-grey-500); }
 .status-bbg-on  { color: var(--pos); font-weight: 700; }
 .status-bbg-off { color: var(--pm-grey-300); font-weight: 700; }
+/* Load-time ingestion notes; urgent (load-bearing / high-impact) reads amber. */
+.status-load-notes { color: var(--pm-grey-700); max-width: 520px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+.status-load-urgent { color: var(--pm-urgent); font-weight: 600; }
 .status-refresh-btn {
     background: var(--pm-accent);
     color: white;

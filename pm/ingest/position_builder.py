@@ -126,16 +126,22 @@ def build_positions(extract: ADWExtract) -> list[Position]:
     cash_other_counters: dict[str, int] = {}
 
     for _, row in holdings.iterrows():
+        # When a load-bearing column is ENTIRELY absent the loader has already
+        # emitted one summary flag with the affected-row count, so these per-row
+        # skips stay silent (no N-note wall). A present column with a bad value
+        # in some rows is a genuine per-row data issue and is still warned.
         asset_class = row.get("asset_class")
         if not isinstance(asset_class, str):
-            warnings.append(
-                f"Holdings: skipped row with non-string asset_class ({asset_class!r})."
-            )
+            if "asset_class" in row.index:
+                warnings.append(
+                    f"Holdings: skipped row with non-string asset_class ({asset_class!r})."
+                )
             continue
 
         account = str(row.get("account") or "")
         if not account:
-            warnings.append("Holdings: skipped row with empty account.")
+            if "account" in row.index:
+                warnings.append("Holdings: skipped row with empty account.")
             continue
 
         position = _build_one(row, account, asset_class, cash_other_counters, warnings)
@@ -198,33 +204,39 @@ def _build_option(
     unrealized_pnl_pct: Optional[float], valuation_price: Optional[float],
     warnings: list[str],
 ) -> Optional[Position]:
+    # As in build_positions: warn per row only when the column is present (a real
+    # per-row gap); an absent column is the loader's single summary flag's job.
     contract_key = row.get("option_contract_key")
     if not isinstance(contract_key, str) or not contract_key:
-        warnings.append(
-            f"Holdings option row missing option_contract_key (account={account}); skipped."
-        )
+        if "option_contract_key" in row.index:
+            warnings.append(
+                f"Holdings option row missing option_contract_key (account={account}); skipped."
+            )
         return None
 
     underlying_ticker = row.get("underlying_ticker")
     if not isinstance(underlying_ticker, str) or not underlying_ticker:
-        warnings.append(
-            f"Holdings option {contract_key} missing underlying_ticker; skipped."
-        )
+        if "underlying_ticker" in row.index:
+            warnings.append(
+                f"Holdings option {contract_key} missing underlying_ticker; skipped."
+            )
         return None
 
     option_type = row.get("option_type")
     if option_type not in ("CALL", "PUT"):
-        warnings.append(
-            f"Holdings option {contract_key} has invalid option_type {option_type!r}; skipped."
-        )
+        if "option_type" in row.index:
+            warnings.append(
+                f"Holdings option {contract_key} has invalid option_type {option_type!r}; skipped."
+            )
         return None
 
     strike = _coerce_float(row.get("option_strike"))
     expiry = row.get("option_expiration")
     if not isinstance(expiry, date) or strike is None:
-        warnings.append(
-            f"Holdings option {contract_key} missing strike/expiry; skipped."
-        )
+        if "option_strike" in row.index and "option_expiration" in row.index:
+            warnings.append(
+                f"Holdings option {contract_key} missing strike/expiry; skipped."
+            )
         return None
 
     underlying_cc = _pick_country_code(
@@ -277,9 +289,10 @@ def _build_equity_or_fund(
 ) -> Optional[Position]:
     ticker_final = row.get("ticker_final")
     if not isinstance(ticker_final, str) or not ticker_final:
-        warnings.append(
-            f"Holdings {asset_class} row missing ticker_final (account={account}); skipped."
-        )
+        if "ticker_final" in row.index:
+            warnings.append(
+                f"Holdings {asset_class} row missing ticker_final (account={account}); skipped."
+            )
         return None
 
     cc = _pick_country_code(
