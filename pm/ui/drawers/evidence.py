@@ -8,7 +8,7 @@ there is no in-content "view signal sheet" button anymore.
 """
 from __future__ import annotations
 
-from dash import html
+from dash import dcc, html
 
 from pm.insight.patterns import Fire
 from pm.store.portfolio_state import PortfolioState
@@ -31,7 +31,10 @@ def _alert_section(fire: Fire, state: PortfolioState) -> html.Div:
         ]),
         html.Div(className="drawer-section", children=[
             html.Div("Rationale", className="drawer-section-label"),
-            html.Div(fire.rationale, className="drawer-rationale"),
+            # Markdown render so the templates' **bold** emphasis shows as bold
+            # rather than literal asterisks. The .drawer-rationale CSS (incl. its
+            # strong/b rule) styles the rendered output.
+            dcc.Markdown(fire.rationale, className="drawer-rationale"),
         ]),
         html.Div(className="drawer-section", children=[
             html.Div("Audit trace", className="drawer-section-label"),

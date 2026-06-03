@@ -825,6 +825,11 @@ html, body {
 }
 .drawer-rationale { font-size: 14px; line-height: 1.55; color: var(--pm-charcoal); }
 .drawer-rationale strong, .drawer-rationale b { color: var(--pm-charcoal); font-weight: 700; }
+/* Markdown wraps the rationale in <p>; drop the default top/bottom margin so a
+   single-paragraph alert sits flush like the old plain div, keeping a small gap
+   only between paragraphs (e.g. the appended structure-context line). */
+.drawer-rationale p { margin: 0 0 0.6em; }
+.drawer-rationale p:last-child { margin-bottom: 0; }
 .drawer-link-btn, .drawer-back-btn {
     background: white;
     border: 1px solid var(--pm-accent);
