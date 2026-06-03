@@ -1,26 +1,37 @@
-"""Tab 2 — Structures section: inferred groupings as confirm/override proposals.
+"""Tab 2 — By Structure view: the structures grid rows/columns + the structure
+detail modal.
 
-Renders each detected structure as a PROPOSED card (visually distinct from a
-confirmed one), with a 3-band confidence chip, a plain-language rationale from the
-canonical trace, partial cover shown as covered + residual sub-rows, and the
-affordances on every proposal: Confirm · Edit (remove a leg) · Reject. A genuine
-contention is rendered as one card offering its ranked alternatives, and can only be
-resolved by an explicit choice — there is no one-click confirm on it. A
-grouped-vs-standalone toggle switches between the structure cards and the legs that
-are not part of any active grouping.
+The holdings table toggles between By Position (the per-leg grid) and By Structure
+(one row per detected structure with Tier-1 economics). Both are AG-Grid Community;
+expand-to-legs is faked with indented leg rows toggled by a caret cell, and a row
+click opens the shared modal — the structure's legs, Tier-1 economics, and the
+Confirm / Reject / Edit / Choose affordances. Those affordances reuse the existing
+buttons + ``state_access.resolve_structure`` (the single write path); this module
+only renders.
 
-Pure presentation: reads ``AccountState.structures`` (already resolved against the
-store in the load path) and never recomputes. Confirm/override is handled by the
-callbacks, which write through ``state_access``.
+Pure presentation: reads ``AccountState.structures`` + ``Position`` fields and the
+Tier-1 aggregation in ``structure_economics``; never recomputes. Tier-2 economics
+(breakeven, max P/L, Greeks, theoretical value) await layer-2 pricing and render as
+``PENDING_PRICING`` markers.
 """
 from __future__ import annotations
 
 from dash import dcc, html
 
 from pm.insight import structures as S
+from pm.ui.blotter.grid import format_position_descriptor
+from pm.ui.deepdive.formatters import MONEY_FULL_FMT, QTY_FMT, SIGNED_COLOR_STYLE
+from pm.ui.deepdive.structure_economics import (
+    PENDING_PRICING,
+    leg_slice,
+    reconcile_allocations,
+    structure_economics,
+)
 
 _PRIMARY = {S.COVERED_CALL, S.COLLAR, S.VERTICAL, S.COVERED_PUT,
             S.CASH_SECURED_PUT, S.STRADDLE, S.STRANGLE}
+_SUB = {S.RESIDUAL_LONG, S.NAKED_EXCESS_SHORT_CALL}
+_CONFIRMED = ("confirmed", "edited")
 _BAND_LABEL = {S.HIGH: "High", S.MEDIUM: "Medium", S.LOW_AMBIGUOUS: "Low-Ambiguous"}
 _TYPE_LABEL = {
     S.COVERED_CALL: "Covered call", S.COLLAR: "Collar", S.VERTICAL: "Vertical",
@@ -29,166 +40,378 @@ _TYPE_LABEL = {
     S.RESIDUAL_LONG: "Uncovered long (residual)",
     S.NAKED_EXCESS_SHORT_CALL: "Naked-excess short call",
 }
+_STATUS_LABEL = {"proposed": "Proposed", "confirmed": "Confirmed",
+                 "edited": "Confirmed (edited)", "rejected": "Rejected"}
 
 
-def _chip(band: str) -> html.Span:
-    return html.Span(_BAND_LABEL.get(band, band),
-                     className=f"struct-chip struct-chip-{band}")
+# ---------------------------------------------------------------------------
+# Small formatters (Python-side, for the modal)
+# ---------------------------------------------------------------------------
+def _money(v) -> str:
+    if v is None:
+        return "—"
+    return f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
 
 
-def _rationale(s) -> str:
-    t = s.rationale_trace or {}
-    return t.get("computation") or t.get("result") or ""
+def _qty(v) -> str:
+    return "—" if v is None else f"{v:g}"
 
 
-def _leg_rows(account, s, removable: bool):
-    rows = []
-    for leg in s.legs:
-        children = [html.Span(leg.role.replace("_", " "), className="struct-leg-role"),
-                    html.Span(f"{leg.allocated_qty:g}", className="struct-leg-qty"),
-                    html.Span(leg.position_id, className="struct-leg-id")]
-        if removable and len(s.legs) > 1:
-            children.append(html.Button(
-                "remove", className="struct-leg-remove",
-                id={"type": "struct-removeleg", "account": account, "sid": s.structure_id,
-                    "leg": leg.position_id}, n_clicks=0))
-        rows.append(html.Div(children, className="struct-leg-row"))
+def _expiry(d) -> str:
+    try:
+        return d.strftime("%b-%y")
+    except Exception:
+        return str(d)
+
+
+def _strikes_str(strikes) -> str:
+    return " / ".join(f"{x:g}" for x in strikes) if strikes else ""
+
+
+def _expiries_str(expiries) -> str:
+    return " / ".join(_expiry(x) for x in expiries) if expiries else ""
+
+
+# ---------------------------------------------------------------------------
+# By Structure grid — columns + rows
+# ---------------------------------------------------------------------------
+def build_structure_columns() -> list[dict]:
+    """Columns for the By Structure grid. Tier-1 economics are real; the single
+    'Pricing (T2)' column flags the layer-2 economics as pending (the modal
+    breaks them out). The leading caret toggles in-grid leg expansion."""
+    return [
+        {"field": "caret", "headerName": "", "width": 40, "sortable": False,
+         "filter": False, "cellClass": "struct-caret-cell"},
+        {"field": "label", "headerName": "Structure", "flex": 2, "minWidth": 240,
+         "tooltipField": "label", "cellClass": "dd-cell-ellipsis"},
+        {"field": "band", "headerName": "Band", "width": 116},
+        {"field": "status", "headerName": "Status", "width": 130},
+        {"field": "strikes", "headerName": "Strikes", "width": 104},
+        {"field": "expiries", "headerName": "Expiries", "width": 96},
+        {"field": "net_qty", "headerName": "Net Qty", "width": 92,
+         "type": "rightAligned", "valueFormatter": QTY_FMT},
+        {"field": "net_debit_credit", "headerName": "Net Deb/Cr", "width": 124,
+         "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT},
+        {"field": "net_pnl", "headerName": "Net P&L", "width": 120,
+         "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT,
+         "cellStyle": SIGNED_COLOR_STYLE},
+        {"field": "net_premium", "headerName": "Net Premium", "width": 124,
+         "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT},
+        {"field": "t2_pricing", "headerName": "Pricing (T2)", "width": 124,
+         "cellClass": "struct-pending-cell"},
+    ]
+
+
+def _structure_row(s, by_id, expanded: set, expandable: bool = True) -> dict:
+    e = structure_economics(s, by_id)
+    return {
+        "_row_id": f"structure::{s.structure_id}",
+        "_kind": "structure",
+        "_structure_id": s.structure_id,
+        "_expandable": expandable,
+        "caret": ("▾" if s.structure_id in expanded else "▸") if expandable else "",
+        "label": f"{_TYPE_LABEL.get(s.type, s.type)} · {s.underlying}",
+        "band": _BAND_LABEL.get(s.confidence_band, s.confidence_band),
+        "status": _STATUS_LABEL.get(s.status, s.status),
+        "strikes": _strikes_str(e["strikes"]),
+        "expiries": _expiries_str(e["expiries"]),
+        "net_qty": e["net_quantity"],
+        "net_debit_credit": e["net_debit_credit"],
+        "net_pnl": e["net_pnl"],
+        "net_premium": e["net_premium"],
+        "t2_pricing": PENDING_PRICING,
+    }
+
+
+def _leg_row(s, leg, by_id, idx: int) -> dict:
+    pos = by_id.get(leg.position_id)
+    cost, _mval, pnl, premium, _ok = leg_slice(leg, pos)
+    desc = format_position_descriptor(pos) if pos is not None else leg.position_id
+    return {
+        "_row_id": f"leg::{s.structure_id}::{leg.position_id}::{idx}",
+        "_kind": "leg",
+        "_structure_id": s.structure_id,
+        "caret": "",
+        "label": f" ↳ {leg.role.replace('_', ' ')}: {desc}",
+        "band": "", "status": "",
+        "strikes": "", "expiries": "",
+        "net_qty": leg.allocated_qty,
+        "net_debit_credit": cost,
+        "net_pnl": pnl,
+        "net_premium": premium,
+        "t2_pricing": "",
+    }
+
+
+def _substructure_row(sub, by_id) -> dict:
+    e = structure_economics(sub, by_id)
+    return {
+        "_row_id": f"sub::{sub.structure_id}",
+        "_kind": "substructure",
+        "_structure_id": sub.structure_id,
+        "caret": "",
+        "label": f" ↳ {_TYPE_LABEL.get(sub.type, sub.type)}",
+        "band": _BAND_LABEL.get(sub.confidence_band, sub.confidence_band),
+        "status": _STATUS_LABEL.get(sub.status, sub.status),
+        "strikes": _strikes_str(e["strikes"]),
+        "expiries": _expiries_str(e["expiries"]),
+        "net_qty": e["net_quantity"],
+        "net_debit_credit": e["net_debit_credit"],
+        "net_pnl": e["net_pnl"],
+        "net_premium": e["net_premium"],
+        "t2_pricing": "",
+    }
+
+
+def _standalone_row(p, qty) -> dict:
+    """A position (or unallocated remainder of one) not part of any structure —
+    display-only, so the By Structure view accounts for every position."""
+    full = p.quantity
+    frac = None
+    try:
+        if full not in (None, 0):
+            frac = float(qty) / float(full)
+    except (TypeError, ValueError):
+        frac = None
+    cost = p.cost_basis * frac if (p.cost_basis is not None and frac is not None) else None
+    pnl = ((p.market_value * frac) - cost) if (
+        cost is not None and p.market_value is not None and frac is not None) else None
+    premium = cost if p.asset_class == "option" else 0.0
+    is_opt = p.asset_class == "option"
+    return {
+        "_row_id": f"standalone::{p.position_id}",
+        "_kind": "standalone",
+        "_position_id": p.position_id,
+        "caret": "",
+        "label": f"Standalone · {format_position_descriptor(p)}",
+        "band": "", "status": "—",
+        "strikes": f"{p.strike:g}" if (is_opt and p.strike is not None) else "",
+        "expiries": _expiry(p.expiry) if (is_opt and p.expiry is not None) else "",
+        "net_qty": qty,
+        "net_debit_credit": cost,
+        "net_pnl": pnl,
+        "net_premium": premium,
+        "t2_pricing": "",
+    }
+
+
+def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]:
+    """Flat rows for the By Structure grid: contention rows, primary-structure
+    rows (with indented legs + residual/naked sub-rows when expanded), then
+    Standalone rows for every position not allocated to a structure. Every
+    position is represented (reconciled), and row ids are unique/stable."""
+    expanded = set(expanded_sids or [])
+    by_id = {p.position_id: p for p in account_state.positions}
+    structures = list(account_state.structures or [])
+    rows: list[dict] = []
+
+    # 1) Contention groups — one row each (resolved → the chosen reading).
+    groups: dict = {}
+    for s in structures:
+        if s.contention_group:
+            groups.setdefault(s.contention_group, []).append(s)
+    for group, alts in sorted(groups.items()):
+        chosen = next((a for a in alts if a.status in _CONFIRMED), None)
+        if chosen is not None:
+            rows.append(_structure_row(chosen, by_id, expanded))
+            if chosen.structure_id in expanded:
+                rows.extend(_leg_row(chosen, leg, by_id, i) for i, leg in enumerate(chosen.legs))
+        else:
+            rows.append({
+                # carry a structure_id (not the group) so the click handler can
+                # parse it from rowId; render_structure_detail derives the group.
+                "_row_id": f"contention::{alts[0].structure_id}",
+                "_kind": "contention",
+                "_structure_id": alts[0].structure_id,
+                "_group": group,
+                "caret": "",
+                "label": f"Contention · {alts[0].underlying}",
+                "band": _BAND_LABEL.get(S.LOW_AMBIGUOUS),
+                "status": "Needs your choice",
+                "strikes": "", "expiries": "", "net_qty": None,
+                "net_debit_credit": None, "net_pnl": None, "net_premium": None,
+                "t2_pricing": PENDING_PRICING,
+            })
+
+    # 2) Primary structures (not contended, not rejected); residual/naked-excess
+    #    on the same underlying ride along as sub-rows when the parent expands.
+    for s in structures:
+        if s.contention_group or s.status == "rejected" or s.type not in _PRIMARY:
+            continue
+        rows.append(_structure_row(s, by_id, expanded))
+        if s.structure_id in expanded:
+            rows.extend(_leg_row(s, leg, by_id, i) for i, leg in enumerate(s.legs))
+            for sub in structures:
+                if (sub.type in _SUB and sub.underlying == s.underlying
+                        and sub.status != "rejected"):
+                    rows.append(_substructure_row(sub, by_id))
+
+    # 3) Standalone — positions with an unallocated remainder (so nothing is
+    #    dropped and the two views reconcile).
+    recon = reconcile_allocations(account_state)
+    for p in account_state.positions:
+        info = recon.get(p.position_id, {})
+        full = info.get("quantity")
+        remainder = info.get("remainder")
+        if full is None:
+            rows.append(_standalone_row(p, p.quantity))
+        elif remainder is not None and abs(remainder) > 1e-6:
+            rows.append(_standalone_row(p, remainder))
+
+    for r in rows:
+        r["_account"] = account_state.account
     return rows
 
 
-def _subrows(account, structures, underlying):
-    """Residual / naked-excess slices for a covered call on this underlying."""
+# ---------------------------------------------------------------------------
+# Structure detail modal — Tier-1 + legs + affordances (reuses resolve_structure)
+# ---------------------------------------------------------------------------
+def _chip(band) -> html.Span:
+    return html.Span(_BAND_LABEL.get(band, band), className=f"struct-chip struct-chip-{band}")
+
+
+def _econ_item(label: str, value: str, pending: bool = False) -> html.Div:
+    return html.Div(className="struct-econ-item", children=[
+        html.Span(label, className="struct-econ-label"),
+        html.Span(value, className="struct-econ-value"
+                  + (" struct-econ-pending" if pending else "")),
+    ])
+
+
+def _tier1_block(e: dict) -> html.Div:
+    return html.Div(className="struct-econ", children=[
+        _econ_item("Net debit/credit", _money(e["net_debit_credit"])),
+        _econ_item("Net P&L", _money(e["net_pnl"])),
+        _econ_item("Net premium", _money(e["net_premium"])),
+        _econ_item("Net quantity", _qty(e["net_quantity"])),
+        _econ_item("Strikes", _strikes_str(e["strikes"]) or "—"),
+        _econ_item("Expiries", _expiries_str(e["expiries"]) or "—"),
+    ])
+
+
+def _tier2_block() -> html.Div:
+    return html.Div(className="struct-econ struct-econ-t2", children=[
+        _econ_item("Breakeven", PENDING_PRICING, pending=True),
+        _econ_item("Max profit/loss", PENDING_PRICING, pending=True),
+        _econ_item("Greeks", PENDING_PRICING, pending=True),
+        _econ_item("Theoretical value", PENDING_PRICING, pending=True),
+    ])
+
+
+def _legs_block(account, s, by_id, removable: bool) -> html.Div:
+    rows = []
+    for leg in s.legs:
+        pos = by_id.get(leg.position_id)
+        cost, _mv, pnl, _prem, _ok = leg_slice(leg, pos)
+        desc = format_position_descriptor(pos) if pos is not None else leg.position_id
+        children = [
+            html.Span(leg.role.replace("_", " "), className="struct-leg-role"),
+            html.Span(desc, className="struct-leg-id"),
+            html.Span(f"{leg.allocated_qty:g}", className="struct-leg-qty"),
+            html.Span(_money(cost), className="struct-leg-qty"),
+            html.Span(_money(pnl), className="struct-leg-qty"),
+        ]
+        if removable and len(s.legs) > 1:
+            children.append(html.Button(
+                "remove", className="struct-leg-remove",
+                id={"type": "struct-removeleg", "account": account,
+                    "sid": s.structure_id, "leg": leg.position_id}, n_clicks=0))
+        rows.append(html.Div(children, className="struct-leg-row"))
+    return html.Div(rows, className="struct-legs")
+
+
+def _sub_block(account, structures, underlying, by_id) -> list:
     out = []
-    for s in structures:
-        if s.underlying == underlying and s.type in (S.RESIDUAL_LONG, S.NAKED_EXCESS_SHORT_CALL):
+    for sub in structures:
+        if sub.type in _SUB and sub.underlying == underlying and sub.status != "rejected":
+            e = structure_economics(sub, by_id)
             out.append(html.Div(className="struct-subrow", children=[
-                html.Span(_TYPE_LABEL.get(s.type, s.type), className="struct-subrow-label"),
-                _chip(s.confidence_band),
-                html.Span(_rationale(s), className="struct-subrow-note"),
+                html.Span(_TYPE_LABEL.get(sub.type, sub.type), className="struct-subrow-label"),
+                html.Span(f"net {_money(e['net_debit_credit'])} · P&L {_money(e['net_pnl'])}",
+                          className="struct-subrow-note"),
             ]))
     return out
 
 
-def _render_card(account, s, structures):
-    confirmed = s.status in ("confirmed", "edited")
-    status_cls = "confirmed" if confirmed else "proposed"
+def _single_detail(account, s, structures, by_id) -> html.Div:
+    confirmed = s.status in _CONFIRMED
+    e = structure_economics(s, by_id)
     head = [
-        html.Span(_TYPE_LABEL.get(s.type, s.type) + f" · {s.underlying}", className="struct-card-title"),
+        html.Span(f"{_TYPE_LABEL.get(s.type, s.type)} · {s.underlying}",
+                  className="struct-card-title"),
         _chip(s.confidence_band),
+        html.Span(_STATUS_LABEL.get(s.status, s.status),
+                  className="struct-confirmed-by" if confirmed else "struct-status-proposed"),
     ]
-    if confirmed:
-        when = (s.resolved_at or "")[:10]
-        head.append(html.Span(f"Confirmed by you{(' on ' + when) if when else ''}",
-                              className="struct-confirmed-by"))
-    body = [
-        html.Div(head, className="struct-card-head"),
-        html.Div(_rationale(s), className="struct-card-rationale"),
-        html.Div(_leg_rows(account, s, removable=not confirmed) + _subrows(account, structures, s.underlying),
-                 className="struct-legs"),
-    ]
+    if confirmed and s.resolved_at:
+        head.append(html.Span(f"on {s.resolved_at[:10]}", className="struct-confirmed-by"))
+
     if confirmed:
         actions = [html.Button("Undo", className="struct-btn",
-                               id={"type": "struct-reject", "account": account, "sid": s.structure_id}, n_clicks=0)]
+                               id={"type": "struct-reject", "account": account,
+                                   "sid": s.structure_id}, n_clicks=0)]
     else:
         actions = [
             html.Button("Confirm", className="struct-btn struct-btn-primary",
-                        id={"type": "struct-confirm", "account": account, "sid": s.structure_id}, n_clicks=0),
+                        id={"type": "struct-confirm", "account": account,
+                            "sid": s.structure_id}, n_clicks=0),
             html.Button("Reject", className="struct-btn",
-                        id={"type": "struct-reject", "account": account, "sid": s.structure_id}, n_clicks=0),
-            html.Span("Edit: remove a leg above", className="struct-edit-hint"),
+                        id={"type": "struct-reject", "account": account,
+                            "sid": s.structure_id}, n_clicks=0),
+            html.Span("Edit: remove a leg below", className="struct-edit-hint"),
         ]
-    body.append(html.Div(actions, className="struct-actions"))
-    return html.Div(body, className=f"struct-card struct-card-{status_cls}")
+
+    return html.Div(className="drawer-content struct-detail", children=[
+        html.Div(head, className="struct-card-head"),
+        html.Div("Tier-1 economics", className="drawer-section-label"),
+        _tier1_block(e),
+        html.Div("Tier-2 — pending layer-2 pricing", className="drawer-section-label"),
+        _tier2_block(),
+        html.Div("Legs", className="drawer-section-label"),
+        _legs_block(account, s, by_id, removable=not confirmed),
+        *_sub_block(account, structures, s.underlying, by_id),
+        html.Div(actions, className="struct-actions"),
+    ])
 
 
-def _render_contention_card(account, alts):
-    # alts: the ranked alternatives sharing a contention group
-    confirmed = [a for a in alts if a.status == "confirmed"]
-    group = alts[0].contention_group
-    if confirmed:
-        chosen = confirmed[0]
-        when = (chosen.resolved_at or "")[:10]
-        return html.Div(className="struct-card struct-card-confirmed", children=[
-            html.Div([html.Span(f"{_TYPE_LABEL.get(chosen.type, chosen.type)} · {chosen.underlying}",
-                                className="struct-card-title"),
-                      html.Span(f"You chose this reading{(' on ' + when) if when else ''}",
-                                className="struct-confirmed-by")], className="struct-card-head"),
-            html.Div(_rationale(chosen), className="struct-card-rationale"),
-            html.Button("Undo", className="struct-btn",
-                        id={"type": "struct-reject", "account": account, "sid": chosen.structure_id}, n_clicks=0),
-        ])
-    options = [{"label": f"{_TYPE_LABEL.get(a.type, a.type)} — {_rationale(a)}", "value": a.structure_id}
-               for a in alts]
-    return html.Div(className="struct-card struct-card-contention", children=[
-        html.Div([html.Span(f"Contention · {alts[0].underlying}", className="struct-card-title"),
+def _contention_detail(account, target, structures, by_id) -> html.Div:
+    group = target.contention_group
+    alts = [a for a in structures if a.contention_group == group]
+    options = [{"label": f"{_TYPE_LABEL.get(a.type, a.type)} — "
+                         f"net {_money(structure_economics(a, by_id)['net_debit_credit'])}",
+                "value": a.structure_id} for a in alts]
+    return html.Div(className="drawer-content struct-detail", children=[
+        html.Div([html.Span(f"Contention · {target.underlying}", className="struct-card-title"),
                   _chip(S.LOW_AMBIGUOUS),
-                  html.Span("needs your choice — these legs read two ways", className="struct-contention-note")],
+                  html.Span("these legs read two ways — choose one",
+                            className="struct-contention-note")],
                  className="struct-card-head"),
-        dcc.RadioItems(id={"type": "struct-radio", "group": group}, options=options, value=None,
-                       className="struct-radio"),
+        dcc.RadioItems(id={"type": "struct-radio", "group": group}, options=options,
+                       value=None, className="struct-radio"),
         html.Div([
             html.Button("Confirm choice", className="struct-btn struct-btn-primary",
-                        id={"type": "struct-choose", "account": account, "group": group}, n_clicks=0),
+                        id={"type": "struct-choose", "account": account, "group": group},
+                        n_clicks=0),
             html.Button("Reject both", className="struct-btn",
-                        id={"type": "struct-reject", "account": account, "sid": alts[0].structure_id}, n_clicks=0),
+                        id={"type": "struct-reject", "account": account,
+                            "sid": alts[0].structure_id}, n_clicks=0),
         ], className="struct-actions"),
     ])
 
 
-def _render_standalone(account_state, structures):
-    """Legs not part of any active (proposed/confirmed) grouping — option legs that
-    fell through detection plus the legs of rejected structures."""
-    claimed = set()
-    for s in structures:
-        if s.status != "rejected" and s.type in _PRIMARY:
-            claimed.update(l.position_id for l in s.legs)
-    rows = []
-    for p in account_state.positions:
-        if p.asset_class == "option" and p.position_id not in claimed and p.quantity:
-            rows.append(html.Div(className="struct-leg-row", children=[
-                html.Span(f"{p.underlying_symbol} {p.right} {p.strike:g}", className="struct-leg-role"),
-                html.Span(f"{p.quantity:g}", className="struct-leg-qty"),
-                html.Span(p.position_id, className="struct-leg-id")]))
-    return html.Div([html.Div("Standalone legs (not in any active grouping)", className="struct-subrow-label"),
-                     html.Div(rows or [html.Div("None.", className="dd-empty")], className="struct-legs")])
-
-
-def _render_toggle(view_mode):
-    def cls(mode):
-        return "group-toggle" + (" group-toggle-active" if view_mode == mode else "")
-    return html.Div(className="struct-toggle", children=[
-        html.Span("View:", className="blotter-control-label"),
-        html.Button("Grouped", id="struct-grouped-btn", n_clicks=0, className=cls("grouped")),
-        html.Button("Standalone", id="struct-standalone-btn", n_clicks=0, className=cls("standalone")),
-    ])
-
-
-def render_structures_section(account_state, view_mode: str = "grouped") -> html.Div:
-    if account_state is None:
-        return html.Div(className="dd-section", children=[
-            html.Div(className="dd-section-head", children=[html.H2("Structures", className="dd-section-title")]),
-            html.Div("No account selected.", className="dd-empty")])
-    structures = list(account_state.structures or [])
-    groups, singles = {}, []
-    for s in structures:
-        (groups.setdefault(s.contention_group, []).append(s) if s.contention_group else singles.append(s))
-
-    if view_mode == "standalone":
-        body = [_render_standalone(account_state, structures)]
-    else:
-        body = [_render_contention_card(account_state.account, alts) for _, alts in sorted(groups.items())]
-        for s in singles:
-            if s.type in _PRIMARY and s.status != "rejected":
-                body.append(_render_card(account_state.account, s, structures))
-        if not body:
-            body = [html.Div("No structures detected for this account.", className="dd-empty")]
-
-    return html.Div(className="dd-section", children=[
-        html.Div(className="dd-section-head", children=[
-            html.H2("Structures", className="dd-section-title"),
-            html.Span(f"{sum(1 for s in singles if s.type in _PRIMARY) + len(groups)} grouped",
-                      className="dd-section-meta"),
-            _render_toggle(view_mode),
-        ]),
-        html.Div(body, id="struct-cards"),
-    ])
+def render_structure_detail(account, structure_id, state) -> html.Div:
+    """Modal body for a structure row: Tier-1 economics, legs, Tier-2 placeholders,
+    and the Confirm / Reject / Edit / Choose affordances (which call the existing
+    resolve_structure). A contended structure renders the alternative chooser —
+    explicit choice required, no one-click confirm."""
+    acc = state.accounts.get(account) if state else None
+    if acc is None:
+        return html.Div("No account selected.", className="trace-muted")
+    structures = list(acc.structures or [])
+    target = next((s for s in structures if s.structure_id == structure_id), None)
+    if target is None:
+        return html.Div("Structure no longer present.", className="trace-muted")
+    by_id = {p.position_id: p for p in acc.positions}
+    if target.contention_group and target.status not in _CONFIRMED:
+        return _contention_detail(account, target, structures, by_id)
+    return _single_detail(account, target, structures, by_id)

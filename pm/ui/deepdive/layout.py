@@ -19,15 +19,15 @@ from pm.ui.deepdive.header import (
     render_kpis,
 )
 from pm.ui.deepdive.positions import render_positions_section
-from pm.ui.deepdive.structures_panel import render_structures_section
 from pm.ui.deepdive.trades import render_trades_section
 
 
 def render_deepdive_sections(state: Optional[PortfolioState], account: Optional[str],
-                             struct_view: str = "grouped") -> dict:
+                             pos_view: str = "position", expanded_sids=None) -> dict:
     """Build the children for each host, keyed by host id. Shared by the layout
-    (eager first paint) and the populate callback (re-paint on change). When
-    state/account is missing (pre async-load), each host shows a loading
+    (eager first paint) and the populate callback (re-paint on change). The
+    Holdings host carries both the By Position and By Structure grids (toggled).
+    When state/account is missing (pre async-load), each host shows a loading
     placeholder so the populate callback has a target to fill."""
     acc_state = state.accounts.get(account) if (state and account) else None
     if acc_state is None:
@@ -35,14 +35,12 @@ def render_deepdive_sections(state: Optional[PortfolioState], account: Optional[
         return {
             "deepdive-kpi": empty,
             "deepdive-positions": empty,
-            "deepdive-structures": empty,
             "deepdive-analytics": empty,
             "deepdive-trades": empty,
         }
     return {
         "deepdive-kpi": render_kpis(acc_state),
-        "deepdive-positions": render_positions_section(acc_state, state),
-        "deepdive-structures": render_structures_section(acc_state, struct_view),
+        "deepdive-positions": render_positions_section(acc_state, state, pos_view, expanded_sids),
         "deepdive-analytics": render_analytics_section(acc_state),
         "deepdive-trades": render_trades_section(acc_state),
     }
@@ -60,7 +58,6 @@ def render_deepdive_tab(state: Optional[PortfolioState]) -> html.Div:
         html.Div(id="deepdive-kpi", className="dd-kpi-host",
                  children=sections["deepdive-kpi"]),
         html.Div(id="deepdive-positions", children=sections["deepdive-positions"]),
-        html.Div(id="deepdive-structures", children=sections["deepdive-structures"]),
         html.Div(id="deepdive-analytics", children=sections["deepdive-analytics"]),
         html.Div(id="deepdive-trades", children=sections["deepdive-trades"]),
     ])

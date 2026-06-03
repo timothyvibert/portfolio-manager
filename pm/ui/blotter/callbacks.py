@@ -204,10 +204,13 @@ def register_callbacks(app: dash.Dash) -> None:
     def _prev_next(_p, _n, drawer_state, blotter_rows, dd_pos_rows):
         state = sa.get_state()
         ds = drawer_state or {}
-        if state is None or ds.get("view") is None:
+        # Prev/Next steps positions; the structure modal view has no position nav.
+        if state is None or ds.get("view") not in ("alert", "tearsheet"):
             return no_update, no_update, no_update
+        # ``or []`` — the source grid may be absent if the view was toggled
+        # while a position modal stayed open (the other grid isn't rendered).
         visible_rows = _visible_rows_for_source(
-            ds.get("source"), blotter_rows, dd_pos_rows)
+            ds.get("source"), blotter_rows, dd_pos_rows) or []
         direction = "prev" if ctx.triggered_id == "drawer-prev" else "next"
         target = step_row(visible_rows, ds.get("account"), ds.get("position_id"), direction)
         if target is None:
@@ -250,11 +253,14 @@ def register_callbacks(app: dash.Dash) -> None:
     def _nav_and_toggle(drawer_state, blotter_rows, dd_pos_rows):
         ds = drawer_state or {}
         view = ds.get("view")
-        if view is None:
+        # The structure modal view has no position prev/next or Alert|Tearsheet
+        # toggle — hide both. (view is None when the modal is closed.)
+        if view not in ("alert", "tearsheet"):
             return ("drawer-nav drawer-nav-hidden", True, True, "",
-                    "view-toggle-btn", "view-toggle-btn")
+                    "view-toggle-btn view-toggle-btn-hidden",
+                    "view-toggle-btn view-toggle-btn-hidden")
         visible_rows = _visible_rows_for_source(
-            ds.get("source"), blotter_rows, dd_pos_rows)
+            ds.get("source"), blotter_rows, dd_pos_rows) or []
         text, prev_dis, next_dis = nav_display(
             visible_rows, ds.get("account"), ds.get("position_id"))
         alert_cls = "view-toggle-btn" + (" view-toggle-btn-active" if view == "alert" else "")

@@ -26,6 +26,10 @@ from pm.ui.deepdive.formatters import (
     QTY_FMT,
     SIGNED_COLOR_STYLE,
 )
+from pm.ui.deepdive.structures_panel import (
+    build_structure_columns,
+    build_structure_rows,
+)
 
 # Alerts cell: tier badge prepended (stays visible if the names truncate),
 # then the comma-joined alert names. Amber on T1, charcoal otherwise.
@@ -176,15 +180,23 @@ def build_positions_rows(account_state, state) -> list[dict]:
     return rows
 
 
-def render_positions_section(account_state, state) -> html.Div:
-    """The full Positions section: heading (with the relocated tier-count
-    summary) + the AG-Grid (id stable so the source-aware modal nav can read
-    its virtualRowData)."""
-    rows = build_positions_rows(account_state, state)
-    grid = dag.AgGrid(
+def _render_pos_toggle(pos_view: str) -> html.Div:
+    """By Position | By Structure segmented toggle (server-side re-render, like
+    the blotter's grouping toggle — Community has no native row grouping)."""
+    def cls(mode: str) -> str:
+        return "group-toggle" + (" group-toggle-active" if pos_view == mode else "")
+    return html.Div(className="struct-toggle", children=[
+        html.Span("View:", className="blotter-control-label"),
+        html.Button("By Position", id="pos-byposition-btn", n_clicks=0, className=cls("position")),
+        html.Button("By Structure", id="pos-bystructure-btn", n_clicks=0, className=cls("structure")),
+    ])
+
+
+def _positions_grid(account_state, state) -> dag.AgGrid:
+    return dag.AgGrid(
         id="deepdive-positions-grid",
         columnDefs=build_positions_columns(),
-        rowData=rows,
+        rowData=build_positions_rows(account_state, state),
         dashGridOptions={
             "rowHeight": 28,
             "headerHeight": 32,
@@ -198,12 +210,53 @@ def render_positions_section(account_state, state) -> html.Div:
         getRowId={"function": "params.data._account + '::' + params.data._position_id"},
         style={"height": "min(52vh, 560px)", "width": "100%"},
     )
+
+
+def _structures_grid(account_state, state, expanded_sids) -> dag.AgGrid:
+    # Same id as the By Position grid: only one is mounted at a time, and reusing
+    # the id that exists in the initial layout keeps cellClicked wired (a grid id
+    # that only ever appears via a callback never binds its event props).
+    return dag.AgGrid(
+        id="deepdive-positions-grid",
+        columnDefs=build_structure_columns(),
+        rowData=build_structure_rows(account_state, state, expanded_sids),
+        dashGridOptions={
+            "rowHeight": 28,
+            "headerHeight": 32,
+            "animateRows": False,
+            # Structure→leg ordering is meaningful, so this grid is not sortable.
+            "rowClassRules": {
+                "struct-grid-subrow": "params.data && (params.data._kind == 'leg' "
+                                      "|| params.data._kind == 'substructure')",
+                "struct-grid-standalone": "params.data && params.data._kind == 'standalone'",
+                "struct-grid-contention": "params.data && params.data._kind == 'contention'",
+            },
+            "defaultColDef": {"sortable": False, "resizable": True, "suppressMovable": True},
+        },
+        className="ag-theme-balham blotter-grid struct-grid",
+        getRowId={"function": "params.data._row_id"},
+        style={"height": "min(52vh, 560px)", "width": "100%"},
+    )
+
+
+def render_positions_section(account_state, state, pos_view: str = "position",
+                             expanded_sids=None) -> html.Div:
+    """The holdings section with the By Position | By Structure toggle. Only the
+    ACTIVE grid is rendered — an AG-Grid initialised inside a ``display:none``
+    container never binds its cellClicked handler, so hiding the inactive grid
+    would make its rows dead. The position-modal callbacks tolerate the other
+    grid being absent (suppress_callback_exceptions + None-safe nav)."""
+    n_positions = len(account_state.positions)
+    by_position = pos_view != "structure"
+    grid = (_positions_grid(account_state, state) if by_position
+            else _structures_grid(account_state, state, expanded_sids))
     return html.Div(className="dd-section", children=[
         html.Div(className="dd-section-head", children=[
-            html.H2("Positions", className="dd-section-title"),
-            html.Span(f"{len(rows)} positions · full book", className="dd-section-meta"),
+            html.H2("Holdings", className="dd-section-title"),
+            html.Span(f"{n_positions} positions · full book", className="dd-section-meta"),
             html.Span(summary_line(account_state),
                       className="dd-section-meta dd-actionables-summary"),
+            _render_pos_toggle(pos_view),
         ]),
         grid,
     ])

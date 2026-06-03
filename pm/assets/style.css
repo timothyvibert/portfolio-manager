@@ -1113,6 +1113,25 @@ html, body {
 .struct-radio { font-size: 12.5px; margin: 4px 0 8px 0; }
 .struct-radio label { display: block; margin: 4px 0; color: var(--pm-charcoal); }
 
+/* By Structure grid — caret, pending (Tier-2), and row-kind tints */
+.view-toggle-btn-hidden { display: none; }
+.struct-caret-cell { cursor: pointer; text-align: center; color: var(--pm-accent); font-weight: 700; }
+.struct-pending-cell { color: var(--pm-grey-400); font-style: italic; }
+.struct-grid .struct-grid-subrow { background: var(--pm-grey-50); color: var(--pm-grey-700); }
+.struct-grid .struct-grid-standalone { color: var(--pm-grey-500); }
+.struct-grid .struct-grid-contention { box-shadow: inset 3px 0 0 0 var(--pm-urgent); }
+
+/* Structure detail modal */
+.struct-detail .drawer-section-label { margin-top: 12px; }
+.struct-status-proposed { font-size: 12px; color: var(--pm-grey-500); }
+.struct-econ {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 18px; margin: 4px 0 2px 0;
+}
+.struct-econ-item { display: flex; flex-direction: column; }
+.struct-econ-label { font-size: 11px; color: var(--pm-grey-500); }
+.struct-econ-value { font-size: 14px; color: var(--pm-charcoal); font-weight: 600; }
+.struct-econ-value.struct-econ-pending { color: var(--pm-grey-400); font-style: italic; font-weight: 400; }
+
 /* Analytics — panel grid */
 .dd-analytics-grid {
     display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px;
