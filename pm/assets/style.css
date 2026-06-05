@@ -617,11 +617,19 @@ html, body {
 .blotter-tab { padding: 10px 16px; }
 .blotter-controls {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 28px;
+    gap: 8px 28px;          /* row-gap 8 when wrapped, column-gap 28 between clusters */
     margin-bottom: 8px;
 }
-.blotter-chips, .blotter-grouping { display: flex; align-items: center; gap: 6px; }
+.blotter-chips, .blotter-grouping,
+.blotter-groups, .blotter-picker-wrap { display: flex; align-items: center; gap: 6px; }
+/* The account / type multi-selects: Community dcc.Dropdown, sized to sit beside
+   the charcoal chips. (Dash 4's Dropdown is a button-triggered listbox — style
+   the trigger via .dash-dropdown / its data-state, not react-select classes.) */
+.blotter-picker { min-width: 170px; font-size: 12px; }
+.blotter-picker-wide { min-width: 230px; }
+.blotter-picker[data-state="open"] { border-color: var(--pm-charcoal); }
 .blotter-control-label {
     font-size: 11px;
     text-transform: uppercase;

@@ -8,8 +8,11 @@ from __future__ import annotations
 import dash
 from dash import Input, Output, State, ctx, html, no_update
 
+from pm.insight.pattern_groups import GROUP_ORDER
 from pm.ui import state_access as sa
 from pm.ui.blotter.grid import (
+    apply_account_filter,
+    apply_alert_filters,
     build_blotter_columns,
     cell_click_target,
     consolidate_fires_to_rows,
@@ -117,21 +120,55 @@ def register_callbacks(app: dash.Dash) -> None:
         pat_cls = "group-toggle" + (" group-toggle-active" if mode == "pattern" else "")
         return mode, acc_cls, pat_cls
 
-    # ---- (tier filter, grouping, full rows) → grid rows (re-sorted) -------
+    # ---- Alert-group chips → group-filter store + chip classes ------------
+    # Each chip independently toggles whether that group's alerts are shown
+    # (all shown by default); the store carries the set of shown groups.
+    @app.callback(
+        Output("group-filter", "data"),
+        Output("group-chip-position", "className"),
+        Output("group-chip-market", "className"),
+        Output("group-chip-research", "className"),
+        Output("group-chip-structural", "className"),
+        Input("group-chip-position", "n_clicks"),
+        Input("group-chip-market", "n_clicks"),
+        Input("group-chip-research", "n_clicks"),
+        Input("group-chip-structural", "n_clicks"),
+        State("group-filter", "data"),
+        prevent_initial_call=True,
+    )
+    def _on_group_chip(_p, _m, _r, _s, current):
+        shown = set(current if current is not None else GROUP_ORDER)
+        trig = ctx.triggered_id
+        if isinstance(trig, str) and trig.startswith("group-chip-"):
+            shown ^= {trig[len("group-chip-"):]}
+        ordered = [g for g in GROUP_ORDER if g in shown]
+        return (ordered, *[
+            _chip_class("tier-chip group-chip", g in shown) for g in GROUP_ORDER
+        ])
+
+    # ---- (tier, grouping, account, group, type, full rows) → grid rows ----
     # Community has no row grouping, so the Account|Pattern toggle is a
-    # server-side re-sort: filter by tier, then sort_rows by the active mode.
+    # server-side re-sort. Slice order (per the build spec): account (row-level)
+    # → group+type (alert-level removal, rebuild, drop-empty) → tier (row-level,
+    # on the REBUILT tier) → sort. Account/type values come straight from their
+    # dropdowns (in-memory, no persistence); group from its store.
     @app.callback(
         Output("blotter-grid", "columnDefs"),
         Output("blotter-grid", "rowData"),
         Output("blotter-grid", "dashGridOptions"),
         Input("tier-filter", "data"),
         Input("group-mode", "data"),
+        Input("blotter-account-picker", "value"),
+        Input("group-filter", "data"),
+        Input("blotter-type-picker", "value"),
         Input("blotter-all-rows", "data"),
     )
-    def _sync_grid(tiers, group_mode, all_rows):
+    def _sync_grid(tiers, group_mode, account_sel, shown_groups, hidden_types, all_rows):
         group_mode = group_mode if group_mode in ("account", "pattern") else "account"
-        filtered = _filter_rows(all_rows or [], tiers if tiers is not None else _ALL_TIERS)
-        rows = sort_rows(filtered, group_mode)
+        rows = apply_account_filter(all_rows or [], account_sel)
+        rows = apply_alert_filters(rows, shown_groups, hidden_types)
+        rows = _filter_rows(rows, tiers if tiers is not None else _ALL_TIERS)
+        rows = sort_rows(rows, group_mode)
         return build_blotter_columns(), rows, default_grid_options()
 
     # =======================================================================
@@ -304,6 +341,7 @@ def register_callbacks(app: dash.Dash) -> None:
     @app.callback(
         Output("status-bar-host", "children"),
         Output("blotter-all-rows", "data"),
+        Output("blotter-account-picker", "options"),
         Output("deepdive-refresh-tick", "data"),
         Output("deepdive-account-picker", "options"),
         Output("deepdive-account-picker", "value"),
@@ -323,11 +361,15 @@ def register_callbacks(app: dash.Dash) -> None:
             new_state = sa.reload_state(reuse_extract=reuse_extract)  # handles prev=None (first load)
         except Exception as exc:  # surface failure in the status bar
             return (html.Div(f"Load failed: {exc}", className="status-left status-empty"),
-                    no_update, no_update, no_update, no_update, "")
+                    no_update, no_update, no_update, no_update, no_update, "")
         rows = consolidate_fires_to_rows(sa.all_fires(new_state), new_state)
         opts = account_options(new_state)
         valid = [o["value"] for o in opts]
         # Preserve the user's selection on a manual refresh; default to the
         # first account on the initial load (picker_value is None then).
         value = picker_value if picker_value in valid else (valid[0] if valid else None)
-        return (render_status_bar(new_state), rows, (tick or 0) + 1, opts, value, "")
+        # The blotter account filter offers the accounts that actually have rows.
+        blotter_accts = [{"label": a, "value": a}
+                         for a in sorted({r["account"] for r in rows if r.get("account")})]
+        return (render_status_bar(new_state), rows, blotter_accts,
+                (tick or 0) + 1, opts, value, "")

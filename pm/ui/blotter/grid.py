@@ -16,6 +16,7 @@ from datetime import date
 from typing import Optional
 
 from pm.ingest.position_builder import Position
+from pm.insight.pattern_groups import GROUP_ORDER, PATTERN_GROUP
 from pm.insight.patterns import Fire
 from pm.store.portfolio_state import PortfolioState
 from pm.ui import state_access as sa
@@ -233,6 +234,40 @@ def _dte_for(position) -> Optional[int]:
         return None
 
 
+def _alert_entries(group: list[Fire]) -> list[dict]:
+    """Structured alert list for one position's fires (already tier-sorted):
+    one entry per distinct pattern, severity order preserved. Each entry is
+    ``{pattern_id, group, name, tier}`` — the unit the group/type filters act on.
+    ``group`` is None for an unmapped id (then never hidden by the group filter)."""
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for f in group:
+        if f.pattern_id in seen:
+            continue
+        seen.add(f.pattern_id)
+        entries.append({
+            "pattern_id": f.pattern_id,
+            "group": PATTERN_GROUP.get(f.pattern_id),
+            "name": f.pattern_name,
+            "tier": f.tier,
+        })
+    return entries
+
+
+def _row_alert_fields(entries: list[dict]) -> dict:
+    """Derive a row's alert-driven fields from its (severity-ordered, deduped)
+    entries. Shared by the row builder and the alert-level filter so the two can
+    never diverge — the default (nothing hidden) render is byte-identical to a
+    rebuild over the same entries. ``entries`` must be non-empty."""
+    return {
+        "alerts": ", ".join(e["name"] for e in entries),
+        "tier": min(e["tier"] for e in entries),       # row tier = max severity
+        "pattern_name": entries[0]["name"],             # primary, for grouping/sort
+        "_primary_pattern_id": entries[0]["pattern_id"],
+        "_alerts": entries,
+    }
+
+
 def consolidate_fires_to_rows(fires: list[Fire], state: PortfolioState) -> list[dict]:
     """One row per (account, position_id). All of a position's fires (alerts)
     are stacked in the ``alerts`` cell; the row's ``tier`` is the max severity
@@ -268,32 +303,70 @@ def consolidate_fires_to_rows(fires: list[Fire], state: PortfolioState) -> list[
         label_text = (format_position_descriptor(position)
                       if position is not None else "Account")
 
-        # Distinct alert names, in severity order — comma-joined on one
-        # logical line (wraps naturally; no hard line-per-alert breaks).
-        alert_names: list[str] = []
-        for f in group:
-            if f.pattern_name not in alert_names:
-                alert_names.append(f.pattern_name)
+        # Structured per-alert list (hidden) — drives both the displayed alerts
+        # cell and the group/type slicing, deduped on pattern in severity order.
+        # The displayed fields come from _row_alert_fields so a filter rebuild
+        # can never diverge from this initial render.
+        entries = _alert_entries(group)
 
         rows.append({
             # Hidden — one row per position; click/nav resolve via these.
             "_account": account,
             "_position_id": position_id,
             "_underlying": primary.underlying,
+            # Non-deduped, one id per fire (kept for the existing row contract).
             "_fire_ids": [f.pattern_id for f in group],
-            "_primary_pattern_id": primary.pattern_id,
-            # Displayed.
+            # Displayed metrics (alert-derived fields added by _row_alert_fields:
+            # alerts, tier, pattern_name, _primary_pattern_id, _alerts).
             "account": account,
             "underlying": primary.underlying or "",
             "position_label": label_text,
-            "tier": min(f.tier for f in group),       # row tier = max severity
-            "pattern_name": primary.pattern_name,      # primary, for grouping/sort
-            "alerts": ", ".join(alert_names),
             "pnl_pct": pnl_pct,
             "position_size_pct": position_size_pct,
             "dte": _dte_for(position),
+            **_row_alert_fields(entries),
         })
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Server-side slicing (pure): account (row-level) + group/type (alert-level).
+# These feed the existing rowData path — Community only, NOT an Enterprise Set
+# Filter — and compose with the tier filter + sort in the blotter callback.
+# ---------------------------------------------------------------------------
+
+def apply_account_filter(rows: list[dict], selected_accounts) -> list[dict]:
+    """Row-level: keep rows whose account is selected. Empty / None selection =
+    all accounts (the default — no narrowing)."""
+    sel = set(selected_accounts or [])
+    if not sel:
+        return list(rows)
+    return [r for r in rows if r.get("account") in sel]
+
+
+def apply_alert_filters(rows: list[dict], shown_groups=None,
+                        hidden_types=None) -> list[dict]:
+    """Alert-level: drop each row's alerts whose group is not shown OR whose
+    pattern id is hidden (the union of hidden), rebuild the row's alerts cell /
+    tier / primary from the survivors, and drop a row only when nothing visible
+    is left. ``shown_groups=None`` → all groups shown; ``hidden_types=None`` →
+    none hidden — so the default call reproduces every row unchanged."""
+    shown = set(GROUP_ORDER if shown_groups is None else shown_groups)
+    hidden = set(hidden_types or [])
+    out: list[dict] = []
+    for r in rows:
+        survivors = [
+            a for a in r.get("_alerts", [])
+            if (a.get("group") is None or a["group"] in shown)
+            and a["pattern_id"] not in hidden
+        ]
+        if not survivors:
+            continue                       # no visible alert → drop the row
+        nr = dict(r)
+        nr.update(_row_alert_fields(survivors))
+        nr["_fire_ids"] = [a["pattern_id"] for a in survivors]
+        out.append(nr)
+    return out
 
 
 # ---------------------------------------------------------------------------

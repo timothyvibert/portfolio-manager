@@ -10,8 +10,14 @@ from __future__ import annotations
 from typing import Optional
 
 import dash_ag_grid as dag
-from dash import html
+from dash import dcc, html
 
+from pm.insight.pattern_groups import (
+    GROUP_LABELS,
+    GROUP_ORDER,
+    PATTERN_GROUP,
+    all_pattern_meta,
+)
 from pm.store.portfolio_state import PortfolioState
 from pm.ui import state_access as sa
 from pm.ui.blotter.grid import (
@@ -20,6 +26,15 @@ from pm.ui.blotter.grid import (
     default_grid_options,
     sort_rows,
 )
+
+# Short chip labels for the alert-group toggles (the full labels live in
+# GROUP_LABELS and are used by the type picker's group headers).
+_GROUP_CHIP_LABEL = {
+    "position": "Position",
+    "market": "Market",
+    "research": "Research",
+    "structural": "Structural",
+}
 
 
 def _tier_chips() -> html.Div:
@@ -43,6 +58,61 @@ def _grouping_toggle() -> html.Div:
                     className="group-toggle group-toggle-active"),
         html.Button("Pattern", id="group-pattern", n_clicks=0,
                     className="group-toggle"),
+    ])
+
+
+def _group_chips() -> html.Div:
+    """One toggle chip per alert group, all shown by default. Toggling a chip
+    off hides that group's alerts (alert-level, rebuilt server-side)."""
+    chips = [html.Span("Groups:", className="blotter-control-label")]
+    for g in GROUP_ORDER:
+        chips.append(html.Button(
+            _GROUP_CHIP_LABEL[g], id=f"group-chip-{g}", n_clicks=0,
+            className="tier-chip group-chip tier-chip-active",
+        ))
+    return html.Div(className="blotter-groups", children=chips)
+
+
+def _account_picker(rows: list[dict]) -> html.Div:
+    """Community multi-select of the accounts present in the blotter. Empty
+    selection = all accounts. Options refresh on load via the blotter callback."""
+    accounts = sorted({r["account"] for r in rows if r.get("account")})
+    return html.Div(className="blotter-picker-wrap", children=[
+        html.Span("Accounts:", className="blotter-control-label"),
+        dcc.Dropdown(
+            id="blotter-account-picker",
+            options=[{"label": a, "value": a} for a in accounts],
+            value=[], multi=True, placeholder="All accounts",
+            className="blotter-picker",
+        ),
+    ])
+
+
+def _type_options() -> list[dict]:
+    """All alert types, ordered and visually grouped by their group (each group
+    is preceded by a disabled header row). Option value = pattern_id; selecting
+    a type hides it. Static — the inventory doesn't change with the data."""
+    meta = all_pattern_meta()
+    opts: list[dict] = []
+    for g in GROUP_ORDER:
+        opts.append({"label": f"— {GROUP_LABELS[g]} —",
+                     "value": f"__hdr_{g}", "disabled": True})
+        for pid, (name, _tier) in meta.items():
+            if PATTERN_GROUP.get(pid) == g:
+                opts.append({"label": name, "value": pid})
+    return opts
+
+
+def _type_picker() -> html.Div:
+    """Community multi-select of alert types to hide. Empty = nothing hidden."""
+    return html.Div(className="blotter-picker-wrap", children=[
+        html.Span("Types:", className="blotter-control-label"),
+        dcc.Dropdown(
+            id="blotter-type-picker",
+            options=_type_options(),
+            value=[], multi=True, placeholder="All alert types",
+            className="blotter-picker blotter-picker-wide",
+        ),
     ])
 
 
@@ -74,6 +144,9 @@ def render_blotter_tab(state: Optional[PortfolioState]) -> html.Div:
     return html.Div(className="blotter-tab", children=[
         html.Div(className="blotter-controls", children=[
             _tier_chips(),
+            _group_chips(),
+            _account_picker(rows),
+            _type_picker(),
             _grouping_toggle(),
         ]),
         grid,

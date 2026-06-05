@@ -13,6 +13,7 @@ from typing import Optional
 
 from dash import dcc, html
 
+from pm.insight.pattern_groups import GROUP_ORDER
 from pm.store.portfolio_state import PortfolioState
 from pm.ui import state_access as sa
 from pm.ui.blotter.grid import consolidate_fires_to_rows
@@ -68,6 +69,9 @@ def build_shell(state: Optional[PortfolioState]) -> html.Div:
         dcc.Store(id="blotter-all-rows", data=initial_rows),
         dcc.Store(id="tier-filter", data=[1, 2, 3]),
         dcc.Store(id="group-mode", data="account"),
+        # Blotter alert-group slice: the groups currently shown (all by
+        # default). Account/type slices live on their dropdowns' own value.
+        dcc.Store(id="group-filter", data=list(GROUP_ORDER)),
         dcc.Store(id="drawer-state", data={"view": None}),
         # Bumped by the load/refresh callback so Tab 2 repopulates from the
         # freshly-loaded state.
