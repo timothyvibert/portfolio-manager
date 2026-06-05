@@ -16,6 +16,8 @@ Tier-1 aggregation in ``structure_economics``; never recomputes. Tier-2 economic
 """
 from __future__ import annotations
 
+from datetime import date
+
 from dash import dcc, html
 
 from pm.insight import structures as S
@@ -24,7 +26,6 @@ from pm.ui.deepdive.formatters import MONEY_FULL_FMT, QTY_FMT, SIGNED_COLOR_STYL
 from pm.ui.deepdive.structure_economics import (
     PENDING_PRICING,
     leg_slice,
-    reconcile_allocations,
     structure_economics,
 )
 
@@ -72,33 +73,56 @@ def _expiries_str(expiries) -> str:
     return " / ".join(_expiry(x) for x in expiries) if expiries else ""
 
 
+def _nearest_dte(expiries):
+    """Integer days to the nearest leg expiry — the desk reads expiry in DTE."""
+    if not expiries:
+        return None
+    try:
+        return (min(expiries) - date.today()).days
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # By Structure grid — columns + rows
 # ---------------------------------------------------------------------------
 def build_structure_columns() -> list[dict]:
-    """Columns for the By Structure grid. Tier-1 economics are real; the single
-    'Pricing (T2)' column flags the layer-2 economics as pending (the modal
-    breaks them out). The leading caret toggles in-grid leg expansion."""
+    """Columns for the By Structure grid, leading with identity + economics and
+    demoting workflow metadata (Band / Status) to the right. Tier-1 economics are
+    real; the single 'Pricing (T2)' column flags the layer-2 economics as pending
+    (the modal breaks them out). The leading caret toggles in-grid leg expansion.
+
+    Numerics mirror the By Position grid (shared formatters, same green/red P&L).
+    Community filters only: numbers get a number filter, the multi-value Strikes /
+    Expiry text columns a text filter (they render '440 / 460', 'Jun-26'). Filtering
+    works cleanly in the default collapsed view; with legs expanded a filter can hide
+    a parent and leave its leg rows orphaned — structure-aware filtering is a separate
+    piece of work."""
     return [
         {"field": "caret", "headerName": "", "width": 40, "sortable": False,
          "filter": False, "cellClass": "struct-caret-cell"},
         {"field": "label", "headerName": "Structure", "flex": 2, "minWidth": 240,
-         "tooltipField": "label", "cellClass": "dd-cell-ellipsis"},
-        {"field": "band", "headerName": "Band", "width": 116},
-        {"field": "status", "headerName": "Status", "width": 130},
-        {"field": "strikes", "headerName": "Strikes", "width": 104},
-        {"field": "expiries", "headerName": "Expiries", "width": 96},
+         "filter": "agTextColumnFilter", "tooltipField": "label", "cellClass": "dd-cell-ellipsis"},
         {"field": "net_qty", "headerName": "Net Qty", "width": 92,
-         "type": "rightAligned", "valueFormatter": QTY_FMT},
+         "type": "rightAligned", "valueFormatter": QTY_FMT, "filter": "agNumberColumnFilter"},
+        {"field": "strikes", "headerName": "Strikes", "width": 110,
+         "filter": "agTextColumnFilter"},
+        {"field": "expiry", "headerName": "Expiry", "width": 96,
+         "filter": "agTextColumnFilter"},
+        {"field": "dte", "headerName": "DTE", "width": 70, "type": "rightAligned",
+         "valueFormatter": {"function": "params.value == null ? '' : params.value"},
+         "filter": "agNumberColumnFilter"},
         {"field": "net_debit_credit", "headerName": "Net Deb/Cr", "width": 124,
-         "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT},
+         "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT, "filter": "agNumberColumnFilter"},
         {"field": "net_pnl", "headerName": "Net P&L", "width": 120,
          "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT,
-         "cellStyle": SIGNED_COLOR_STYLE},
+         "cellStyle": SIGNED_COLOR_STYLE, "filter": "agNumberColumnFilter"},
         {"field": "net_premium", "headerName": "Net Premium", "width": 124,
-         "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT},
+         "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT, "filter": "agNumberColumnFilter"},
         {"field": "t2_pricing", "headerName": "Pricing (T2)", "width": 124,
          "cellClass": "struct-pending-cell"},
+        {"field": "band", "headerName": "Band", "width": 116, "filter": "agTextColumnFilter"},
+        {"field": "status", "headerName": "Status", "width": 130, "filter": "agTextColumnFilter"},
     ]
 
 
@@ -114,7 +138,8 @@ def _structure_row(s, by_id, expanded: set, expandable: bool = True) -> dict:
         "band": _BAND_LABEL.get(s.confidence_band, s.confidence_band),
         "status": _STATUS_LABEL.get(s.status, s.status),
         "strikes": _strikes_str(e["strikes"]),
-        "expiries": _expiries_str(e["expiries"]),
+        "expiry": _expiries_str(e["expiries"]),
+        "dte": _nearest_dte(e["expiries"]),
         "net_qty": e["net_quantity"],
         "net_debit_credit": e["net_debit_credit"],
         "net_pnl": e["net_pnl"],
@@ -134,7 +159,7 @@ def _leg_row(s, leg, by_id, idx: int) -> dict:
         "caret": "",
         "label": f" ↳ {leg.role.replace('_', ' ')}: {desc}",
         "band": "", "status": "",
-        "strikes": "", "expiries": "",
+        "strikes": "", "expiry": "", "dte": None,
         "net_qty": leg.allocated_qty,
         "net_debit_credit": cost,
         "net_pnl": pnl,
@@ -154,7 +179,8 @@ def _substructure_row(sub, by_id) -> dict:
         "band": _BAND_LABEL.get(sub.confidence_band, sub.confidence_band),
         "status": _STATUS_LABEL.get(sub.status, sub.status),
         "strikes": _strikes_str(e["strikes"]),
-        "expiries": _expiries_str(e["expiries"]),
+        "expiry": _expiries_str(e["expiries"]),
+        "dte": _nearest_dte(e["expiries"]),
         "net_qty": e["net_quantity"],
         "net_debit_credit": e["net_debit_credit"],
         "net_pnl": e["net_pnl"],
@@ -163,47 +189,32 @@ def _substructure_row(sub, by_id) -> dict:
     }
 
 
-def _standalone_row(p, qty) -> dict:
-    """A position (or unallocated remainder of one) not part of any structure —
-    display-only, so the By Structure view accounts for every position."""
-    full = p.quantity
-    frac = None
-    try:
-        if full not in (None, 0):
-            frac = float(qty) / float(full)
-    except (TypeError, ValueError):
-        frac = None
-    cost = p.cost_basis * frac if (p.cost_basis is not None and frac is not None) else None
-    pnl = ((p.market_value * frac) - cost) if (
-        cost is not None and p.market_value is not None and frac is not None) else None
-    premium = cost if p.asset_class == "option" else 0.0
-    is_opt = p.asset_class == "option"
-    return {
-        "_row_id": f"standalone::{p.position_id}",
-        "_kind": "standalone",
-        "_position_id": p.position_id,
-        "caret": "",
-        "label": f"Standalone · {format_position_descriptor(p)}",
-        "band": "", "status": "—",
-        "strikes": f"{p.strike:g}" if (is_opt and p.strike is not None) else "",
-        "expiries": _expiry(p.expiry) if (is_opt and p.expiry is not None) else "",
-        "net_qty": qty,
-        "net_debit_credit": cost,
-        "net_pnl": pnl,
-        "net_premium": premium,
-        "t2_pricing": "",
-    }
+def _has_tier1_attention(s, t1_sids, t1_pids) -> bool:
+    """A structure draws attention if a tier-1 fire targets it directly (by
+    structure_id) or lands on any of its leg positions."""
+    if s.structure_id in t1_sids:
+        return True
+    return any(leg.position_id in t1_pids for leg in s.legs)
 
 
 def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]:
-    """Flat rows for the By Structure grid: contention rows, primary-structure
-    rows (with indented legs + residual/naked sub-rows when expanded), then
-    Standalone rows for every position not allocated to a structure. Every
-    position is represented (reconciled), and row ids are unique/stable."""
+    """Flat rows for the By Structure grid: contention rows first, then the detected
+    structures ordered by attention — a tier-1 fire (on the structure or any of its
+    legs) floats it up, then largest absolute Net P&L. Each structure's indented legs
+    and residual/naked sub-rows ride beneath it when expanded. Structures only — a
+    large *unstructured* position shows in the By Position view, not here. Row ids are
+    unique/stable."""
     expanded = set(expanded_sids or [])
     by_id = {p.position_id: p for p in account_state.positions}
     structures = list(account_state.structures or [])
     rows: list[dict] = []
+
+    # Tier-1 attention set, built once for the account: structures a T1 fire targets
+    # by structure_id, and positions a T1 fire lands on (a structure inherits attention
+    # from a fire on any of its legs). Read-only over already-loaded fires.
+    fires = list(getattr(account_state, "fires", []) or [])
+    t1_sids = {f.structure_id for f in fires if f.tier == 1 and f.structure_id}
+    t1_pids = {f.position_id for f in fires if f.tier == 1}
 
     # 1) Contention groups — one row each (resolved → the chosen reading).
     groups: dict = {}
@@ -228,16 +239,23 @@ def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]
                 "label": f"Contention · {alts[0].underlying}",
                 "band": _BAND_LABEL.get(S.LOW_AMBIGUOUS),
                 "status": "Needs your choice",
-                "strikes": "", "expiries": "", "net_qty": None,
+                "strikes": "", "expiry": "", "dte": None, "net_qty": None,
                 "net_debit_credit": None, "net_pnl": None, "net_premium": None,
                 "t2_pricing": PENDING_PRICING,
             })
 
-    # 2) Primary structures (not contended, not rejected); residual/naked-excess
-    #    on the same underlying ride along as sub-rows when the parent expands.
-    for s in structures:
-        if s.contention_group or s.status == "rejected" or s.type not in _PRIMARY:
-            continue
+    # 2) Primary structures (not contended, not rejected), ordered by attention.
+    #    Reorder whole structure BLOCKS — not an AG-Grid row sort — so each block's
+    #    legs and residual/naked sub-rows stay attached beneath it when expanded.
+    primaries = [s for s in structures
+                 if not s.contention_group and s.status != "rejected" and s.type in _PRIMARY]
+
+    def _attention_key(s):
+        npnl = structure_economics(s, by_id)["net_pnl"]
+        return (0 if _has_tier1_attention(s, t1_sids, t1_pids) else 1,
+                -abs(npnl) if npnl is not None else 0.0)
+
+    for s in sorted(primaries, key=_attention_key):
         rows.append(_structure_row(s, by_id, expanded))
         if s.structure_id in expanded:
             rows.extend(_leg_row(s, leg, by_id, i) for i, leg in enumerate(s.legs))
@@ -245,18 +263,6 @@ def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]
                 if (sub.type in _SUB and sub.underlying == s.underlying
                         and sub.status != "rejected"):
                     rows.append(_substructure_row(sub, by_id))
-
-    # 3) Standalone — positions with an unallocated remainder (so nothing is
-    #    dropped and the two views reconcile).
-    recon = reconcile_allocations(account_state)
-    for p in account_state.positions:
-        info = recon.get(p.position_id, {})
-        full = info.get("quantity")
-        remainder = info.get("remainder")
-        if full is None:
-            rows.append(_standalone_row(p, p.quantity))
-        elif remainder is not None and abs(remainder) > 1e-6:
-            rows.append(_standalone_row(p, remainder))
 
     for r in rows:
         r["_account"] = account_state.account

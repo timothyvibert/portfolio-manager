@@ -64,17 +64,23 @@ def format_trade_instrument(row: dict) -> str:
 
 
 def build_trades_columns() -> list[dict]:
+    # Community filters: a true date picker on Date (the cell is an ISO string, so it
+    # needs the ISO parse comparator), number filters on the numerics, text elsewhere.
     return [
-        {"field": "trade_date", "headerName": "Date", "width": 115, "filter": True,
+        {"field": "trade_date", "headerName": "Date", "width": 115,
+         "filter": "agDateColumnFilter",
+         "filterParams": {"comparator": {"function": "dagfuncs.ISODateComparator"},
+                          "browserDatePicker": True},
          "sort": "desc", "sortIndex": 0},
-        {"field": "buy_sell", "headerName": "B/S", "width": 80, "cellStyle": BUYSELL_STYLE},
-        {"field": "action", "headerName": "Lifecycle", "width": 150, "filter": True},
+        {"field": "buy_sell", "headerName": "B/S", "width": 80,
+         "filter": "agTextColumnFilter", "cellStyle": BUYSELL_STYLE},
+        {"field": "action", "headerName": "Lifecycle", "width": 150, "filter": "agTextColumnFilter"},
         {"field": "instrument", "headerName": "Instrument", "flex": 2, "minWidth": 240,
-         "filter": True, "tooltipField": "instrument"},
+         "filter": "agTextColumnFilter", "tooltipField": "instrument"},
         {"field": "quantity", "headerName": "Quantity", "width": 120,
-         "type": "rightAligned", "valueFormatter": QTY_FMT},
+         "type": "rightAligned", "filter": "agNumberColumnFilter", "valueFormatter": QTY_FMT},
         {"field": "principal", "headerName": "Principal", "width": 140,
-         "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT},
+         "type": "rightAligned", "filter": "agNumberColumnFilter", "valueFormatter": MONEY_FULL_FMT},
     ]
 
 
@@ -113,6 +119,9 @@ def render_trades_section(account_state) -> html.Div:
             "rowHeight": 28,
             "headerHeight": 32,
             "animateRows": False,
+            # Highlight-to-copy (Community text selection + Ctrl-C), not range copy.
+            "enableCellTextSelection": True,
+            "ensureDomOrder": True,
             "defaultColDef": {"sortable": True, "resizable": True, "suppressMovable": False},
         },
         className="ag-theme-balham blotter-grid",

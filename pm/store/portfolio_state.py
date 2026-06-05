@@ -123,16 +123,20 @@ class PortfolioState:
 def load_portfolio_state(
     data_dir: Path,
     bbg_ok: Optional[bool] = None,
+    extract_path: Optional[Path] = None,
 ) -> PortfolioState:
-    """End-to-end load: find the latest holdings extract, build positions, fetch
-    a single BBG snapshot across the union of underlyings, then slice
-    per account.
+    """End-to-end load: read a holdings extract, build positions, fetch a single BBG
+    snapshot across the union of underlyings, then slice per account.
 
     ``bbg_ok``:
       - ``None``: probe Bloomberg via ``is_bloomberg_available()``.
       - ``True`` / ``False``: trust the caller (used by tests).
+    ``extract_path``:
+      - ``None``: read the latest extract in ``data_dir`` (pick up a newer file).
+      - a path: read that specific extract (re-enrich the current file without
+        switching to a newer one — backs the "Refresh BBG" path).
     """
-    latest = find_latest_adw_extract(data_dir)
+    latest = Path(extract_path) if extract_path is not None else find_latest_adw_extract(data_dir)
     if latest is None:
         raise FileNotFoundError(
             f"No `adw_extract_YYYYMMDD_HHMMSS.xlsx` found in {data_dir}."
@@ -222,12 +226,20 @@ def load_portfolio_state(
 def refresh_portfolio_state(
     current: PortfolioState | None,
     data_dir: Path,
+    reuse_extract: bool = False,
 ) -> PortfolioState:
     """Re-runs ``load_portfolio_state``. Re-probes Bloomberg every time —
     one BDP call is cheap and avoids carrying stale connection state if
     the Terminal comes online mid-session. Logs whether the extract
-    timestamp changed."""
-    new_state = load_portfolio_state(data_dir, bbg_ok=None)
+    timestamp changed.
+
+    ``reuse_extract``: when True (and a prior state exists), re-read the *current*
+    extract file rather than the latest in the data dir — re-pulling market data on
+    the same holdings ("Refresh BBG"). When False, read the latest file ("Refresh
+    Acct Data" / initial load), picking up a newer extract if one has landed."""
+    extract_path = (current.extract.source_path
+                    if (reuse_extract and current is not None) else None)
+    new_state = load_portfolio_state(data_dir, bbg_ok=None, extract_path=extract_path)
     if current is not None:
         if new_state.extract.extract_ts != current.extract.extract_ts:
             logger.info(

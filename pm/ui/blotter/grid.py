@@ -175,20 +175,20 @@ def build_blotter_columns() -> list[dict]:
     return [
         {
             "field": "account", "headerName": "Account",
-            "filter": True, "width": 120, "pinned": "left",
+            "filter": "agTextColumnFilter", "width": 120, "pinned": "left",
             "cellClass": "blotter-account-cell",
         },
         {
             "field": "underlying", "headerName": "Ticker",
-            "filter": True, "width": 100,
+            "filter": "agTextColumnFilter", "width": 100,
             "cellClass": "blotter-ticker-cell",
             "valueFormatter": {"function": "params.value ? params.value : '—'"},
         },
         {"field": "position_label", "headerName": "Position", "width": 190,
-         "filter": True, "tooltipField": "position_label"},
+         "filter": "agTextColumnFilter", "tooltipField": "position_label"},
         {
             "field": "tier", "headerName": "Tier", "width": 80,
-            "filter": True, "type": "rightAligned",
+            "filter": "agNumberColumnFilter", "type": "rightAligned",
             "valueFormatter": _TIER_FORMATTER, "cellStyle": _TIER_STYLE,
         },
         {
@@ -204,16 +204,18 @@ def build_blotter_columns() -> list[dict]:
         },
         {
             "field": "pnl_pct", "headerName": "P&L %", "width": 100,
-            "type": "rightAligned",
+            "type": "rightAligned", "filter": "agNumberColumnFilter",
             "valueFormatter": _PCT_FORMATTER, "cellStyle": _SIGNED_COLOR_STYLE,
         },
         {
             "field": "position_size_pct", "headerName": "% NAV", "width": 95,
-            "type": "rightAligned", "valueFormatter": _PCT_ABS_FORMATTER,
+            "type": "rightAligned", "filter": "agNumberColumnFilter",
+            "valueFormatter": _PCT_ABS_FORMATTER,
         },
         {
             "field": "dte", "headerName": "DTE", "width": 80,
-            "type": "rightAligned", "valueFormatter": _INT_FORMATTER,
+            "type": "rightAligned", "filter": "agNumberColumnFilter",
+            "valueFormatter": _INT_FORMATTER,
         },
     ]
 
@@ -340,6 +342,10 @@ def default_grid_options() -> dict:
         "rowHeight": 28,
         "headerHeight": 32,
         "animateRows": False,
+        # Highlight-to-copy: native text selection + Ctrl-C copies the selected
+        # cells in visual order. Community only — not Enterprise range copy.
+        "enableCellTextSelection": True,
+        "ensureDomOrder": True,
         "rowClassRules": {
             # Top-border separator above the first row of each group block.
             "blotter-group-start": "params.data && params.data._group_first",

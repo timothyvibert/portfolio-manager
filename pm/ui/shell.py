@@ -91,8 +91,14 @@ def build_shell(state: Optional[PortfolioState]) -> html.Div:
                     id="bbg-loading", type="circle", color="#6b6b6b",
                     className="bbg-loading", children=html.Div(id="bbg-load-sentinel"),
                 ),
+                html.Button("Refresh Acct Data", id="refresh-acct-button", n_clicks=0,
+                            className="status-refresh-btn",
+                            title="Re-read the latest extract file from the data directory "
+                                  "and re-run the pipeline (picks up a newer file)."),
                 html.Button("Refresh BBG", id="refresh-button", n_clicks=0,
-                            className="status-refresh-btn"),
+                            className="status-refresh-btn",
+                            title="Re-pull market data on the current extract "
+                                  "(does not switch to a newer file)."),
             ]),
         ]),
 

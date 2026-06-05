@@ -310,13 +310,17 @@ def register_callbacks(app: dash.Dash) -> None:
         Output("bbg-load-sentinel", "children"),
         Input("initial-load", "n_intervals"),
         Input("refresh-button", "n_clicks"),
+        Input("refresh-acct-button", "n_clicks"),
         State("deepdive-account-picker", "value"),
         State("deepdive-refresh-tick", "data"),
         prevent_initial_call=True,
     )
-    def _load_or_refresh(_n_intervals, _n_clicks, picker_value, tick):
+    def _load_or_refresh(_n_intervals, _n_clicks_bbg, _n_clicks_acct, picker_value, tick):
+        # Refresh BBG re-pulls market data on the current extract; Refresh Acct Data
+        # (and the initial load) read the latest extract file from the data dir.
+        reuse_extract = ctx.triggered_id == "refresh-button"
         try:
-            new_state = sa.reload_state()  # handles prev=None (first load)
+            new_state = sa.reload_state(reuse_extract=reuse_extract)  # handles prev=None (first load)
         except Exception as exc:  # surface failure in the status bar
             return (html.Div(f"Load failed: {exc}", className="status-left status-empty"),
                     no_update, no_update, no_update, no_update, "")

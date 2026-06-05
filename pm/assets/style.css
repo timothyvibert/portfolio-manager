@@ -548,10 +548,29 @@ html, body {
 }
 .status-left-host { display: flex; align-items: center; min-width: 0; overflow: hidden; }
 .status-left { display: flex; align-items: center; gap: 18px; }
-.status-right { display: flex; align-items: center; gap: 10px; }
-/* Loading spinner next to Refresh BBG — a small fixed box so the indeterminate
-   circle has room without overlaying the grid (only the tiny sentinel is wrapped). */
-.bbg-loading { position: relative; width: 22px; height: 22px; }
+.status-right { display: flex; align-items: center; gap: 10px; position: relative; }
+/* Loading spinner next to the Refresh buttons. dcc.Loading otherwise renders a
+   full-size absolute overlay (100% of its positioned ancestor) that flex-centres a
+   ~40px spinner, so it overflows into the table below. Pin it to a compact inline box
+   in the status bar, lift it above the grid, and scale the spinner to fit. */
+.bbg-loading,
+#bbg-loading {
+    position: relative !important;
+    top: auto !important;
+    left: auto !important;
+    width: 22px !important;
+    height: 22px !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+    z-index: 30;
+}
+.bbg-loading .dash-spinner,
+#bbg-loading .dash-spinner {
+    transform: scale(0.5);
+    transform-origin: center center;
+}
 .status-item { color: var(--pm-grey-700); }
 .status-strong { color: var(--pm-charcoal); font-weight: 700; }
 .status-muted { color: var(--pm-grey-500); }

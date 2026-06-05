@@ -102,12 +102,15 @@ def set_state(state: Optional[PortfolioState],
     return state
 
 
-def reload_state() -> Optional[PortfolioState]:
-    """Refresh the global PortfolioState in place. Returns the new state."""
+def reload_state(reuse_extract: bool = False) -> Optional[PortfolioState]:
+    """Refresh the global PortfolioState in place. Returns the new state.
+
+    ``reuse_extract``: re-enrich the current extract file ("Refresh BBG"); when
+    False, read the latest extract in the data dir ("Refresh Acct Data" / first load)."""
     from pm.config import ADW_DATA_DIR
     from pm.store.portfolio_state import refresh_portfolio_state
     prev = _RUNTIME.get("state")
-    new_state = refresh_portfolio_state(prev, ADW_DATA_DIR)
+    new_state = refresh_portfolio_state(prev, ADW_DATA_DIR, reuse_extract=reuse_extract)
     _RUNTIME["state"] = new_state
     return new_state
 
