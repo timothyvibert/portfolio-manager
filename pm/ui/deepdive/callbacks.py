@@ -14,9 +14,10 @@ from dash import ALL, Input, Output, State, ctx, no_update
 
 from pm.ui import state_access as sa
 from pm.ui.blotter.callbacks import _OPEN_CLS, _render_body, _underlying_for
+from pm.ui.blotter.grid import consolidate_fires_to_rows
 from pm.ui.deepdive.header import account_options, default_account
 from pm.ui.deepdive.layout import render_deepdive_sections
-from pm.ui.deepdive.positions import render_positions_section
+from pm.ui.deepdive.positions import build_positions_rows, render_positions_section
 from pm.ui.deepdive.structures_panel import build_structure_rows, render_structure_detail
 
 _DD_HOST_IDS = [
@@ -92,11 +93,14 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
     # ---- Structure confirm / reject / edit / choose-alternative -------------
     # The affordances live in the modal now. Each writes through the single state
     # owner (state_access.resolve_structure → the store; re-applies the resolution
-    # to the in-memory structures; no signal recompute), then re-renders the modal
-    # body (new status) AND the Holdings section (the By Structure grid row).
+    # and re-derives that structure's fires; no signal recompute), then re-renders
+    # the modal body (new status), the Holdings grid (whichever view is active), and
+    # the blotter row store — so the fires the resolution unlocked/cleared show on
+    # both tabs immediately, no manual reload.
     @app.callback(
         Output("drawer-body", "children", allow_duplicate=True),
         Output("deepdive-positions-grid", "rowData", allow_duplicate=True),
+        Output("blotter-all-rows", "data", allow_duplicate=True),
         Input({"type": "struct-confirm", "account": ALL, "sid": ALL}, "n_clicks"),
         Input({"type": "struct-reject", "account": ALL, "sid": ALL}, "n_clicks"),
         Input({"type": "struct-removeleg", "account": ALL, "sid": ALL, "leg": ALL}, "n_clicks"),
@@ -111,10 +115,10 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
         trig = ctx.triggered_id
         state = sa.get_state()
         if not isinstance(trig, dict) or state is None:
-            return no_update, no_update
+            return no_update, no_update, no_update
         # ignore the spurious fire when a control (re)mounts with n_clicks None/0
         if not (ctx.triggered[0] if ctx.triggered else {}).get("value"):
-            return no_update, no_update
+            return no_update, no_update, no_update
         ttype = trig.get("type")
         account = trig.get("account")
         sid_for_modal = trig.get("sid")
@@ -126,25 +130,35 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
             acc = state.accounts.get(account)
             s = next((x for x in acc.structures if x.structure_id == trig["sid"]), None) if acc else None
             if s is None:
-                return no_update, no_update
+                return no_update, no_update, no_update
             kept = [l.position_id for l in s.legs if l.position_id != trig["leg"]]
             if not kept:
-                return no_update, no_update
+                return no_update, no_update, no_update
             sa.resolve_structure(account, trig["sid"], "edited", edited_legs=kept)
         elif ttype == "struct-choose":
             chosen_sid = _radio_value_for_group(trig.get("group"))
             if not chosen_sid:          # explicit choice required — no silent confirm
-                return no_update, no_update
+                return no_update, no_update, no_update
             sa.resolve_structure(account, chosen_sid, "confirmed")
             sid_for_modal = chosen_sid
         acc_state = state.accounts.get(account) if account else None
         body = (render_structure_detail(account, sid_for_modal, state)
                 if (account and sid_for_modal) else no_update)
-        # Update the mounted grid's rowData (not a section re-render) so the new
-        # status shows on the persistent grid — same reason as the caret toggle.
-        rows = (build_structure_rows(acc_state, state, expanded) if acc_state is not None
-                else no_update)
-        return body, rows
+        # Update the mounted grid's rowData (not a section re-render) so the change
+        # shows on the persistent grid — same reason as the caret toggle. Honour the
+        # active view: the By Structure grid shows structure rows, the By Position
+        # grid shows position rows (which carry the alerts cell), so the grid that is
+        # mounted reflects the new fire set.
+        if acc_state is None:
+            rows = no_update
+        elif pos_view == "structure":
+            rows = build_structure_rows(acc_state, state, expanded)
+        else:
+            rows = build_positions_rows(acc_state, state)
+        # Refresh the blotter row store so Tab 1 is current when the user returns to
+        # it (the blotter grid re-sorts off this store).
+        blotter_rows = consolidate_fires_to_rows(sa.all_fires(state), state)
+        return body, rows, blotter_rows
 
     # ---- By Position | By Structure toggle (server-side re-render) ----------
     @app.callback(
