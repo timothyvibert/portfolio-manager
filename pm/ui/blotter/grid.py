@@ -330,7 +330,7 @@ def consolidate_fires_to_rows(fires: list[Fire], state: PortfolioState) -> list[
 
 
 # ---------------------------------------------------------------------------
-# Server-side slicing (pure): account (row-level) + group/type (alert-level).
+# Server-side slicing (pure): account (row-level) + group (alert-level).
 # These feed the existing rowData path — Community only, NOT an Enterprise Set
 # Filter — and compose with the tier filter + sort in the blotter callback.
 # ---------------------------------------------------------------------------
@@ -344,21 +344,18 @@ def apply_account_filter(rows: list[dict], selected_accounts) -> list[dict]:
     return [r for r in rows if r.get("account") in sel]
 
 
-def apply_alert_filters(rows: list[dict], shown_groups=None,
-                        hidden_types=None) -> list[dict]:
-    """Alert-level: drop each row's alerts whose group is not shown OR whose
-    pattern id is hidden (the union of hidden), rebuild the row's alerts cell /
-    tier / primary from the survivors, and drop a row only when nothing visible
-    is left. ``shown_groups=None`` → all groups shown; ``hidden_types=None`` →
-    none hidden — so the default call reproduces every row unchanged."""
+def apply_alert_filters(rows: list[dict], shown_groups=None) -> list[dict]:
+    """Alert-level: drop each row's alerts whose group is not shown, rebuild the
+    row's alerts cell / tier / primary from the survivors, and drop a row only
+    when nothing visible is left. ``shown_groups=None`` → all groups shown, so
+    the default call reproduces every row unchanged. An alert with an unmapped
+    (None) group is never hidden."""
     shown = set(GROUP_ORDER if shown_groups is None else shown_groups)
-    hidden = set(hidden_types or [])
     out: list[dict] = []
     for r in rows:
         survivors = [
             a for a in r.get("_alerts", [])
-            if (a.get("group") is None or a["group"] in shown)
-            and a["pattern_id"] not in hidden
+            if a.get("group") is None or a["group"] in shown
         ]
         if not survivors:
             continue                       # no visible alert → drop the row

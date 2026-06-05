@@ -127,16 +127,16 @@ def register_callbacks(app: dash.Dash) -> None:
         Output("group-filter", "data"),
         Output("group-chip-position", "className"),
         Output("group-chip-market", "className"),
-        Output("group-chip-research", "className"),
-        Output("group-chip-structural", "className"),
+        Output("group-chip-catalyst", "className"),
+        Output("group-chip-informational", "className"),
         Input("group-chip-position", "n_clicks"),
         Input("group-chip-market", "n_clicks"),
-        Input("group-chip-research", "n_clicks"),
-        Input("group-chip-structural", "n_clicks"),
+        Input("group-chip-catalyst", "n_clicks"),
+        Input("group-chip-informational", "n_clicks"),
         State("group-filter", "data"),
         prevent_initial_call=True,
     )
-    def _on_group_chip(_p, _m, _r, _s, current):
+    def _on_group_chip(_p, _m, _c, _i, current):
         shown = set(current if current is not None else GROUP_ORDER)
         trig = ctx.triggered_id
         if isinstance(trig, str) and trig.startswith("group-chip-"):
@@ -146,12 +146,12 @@ def register_callbacks(app: dash.Dash) -> None:
             _chip_class("tier-chip group-chip", g in shown) for g in GROUP_ORDER
         ])
 
-    # ---- (tier, grouping, account, group, type, full rows) → grid rows ----
+    # ---- (tier, grouping, account, group, full rows) → grid rows ----------
     # Community has no row grouping, so the Account|Pattern toggle is a
-    # server-side re-sort. Slice order (per the build spec): account (row-level)
-    # → group+type (alert-level removal, rebuild, drop-empty) → tier (row-level,
-    # on the REBUILT tier) → sort. Account/type values come straight from their
-    # dropdowns (in-memory, no persistence); group from its store.
+    # server-side re-sort. Slice order: account (row-level) → group (alert-level
+    # removal, rebuild, drop-empty) → tier (row-level, on the REBUILT tier) →
+    # sort. The account value comes straight from its dropdown (in-memory, no
+    # persistence); the shown groups from the group-filter store.
     @app.callback(
         Output("blotter-grid", "columnDefs"),
         Output("blotter-grid", "rowData"),
@@ -160,13 +160,12 @@ def register_callbacks(app: dash.Dash) -> None:
         Input("group-mode", "data"),
         Input("blotter-account-picker", "value"),
         Input("group-filter", "data"),
-        Input("blotter-type-picker", "value"),
         Input("blotter-all-rows", "data"),
     )
-    def _sync_grid(tiers, group_mode, account_sel, shown_groups, hidden_types, all_rows):
+    def _sync_grid(tiers, group_mode, account_sel, shown_groups, all_rows):
         group_mode = group_mode if group_mode in ("account", "pattern") else "account"
         rows = apply_account_filter(all_rows or [], account_sel)
-        rows = apply_alert_filters(rows, shown_groups, hidden_types)
+        rows = apply_alert_filters(rows, shown_groups)
         rows = _filter_rows(rows, tiers if tiers is not None else _ALL_TIERS)
         rows = sort_rows(rows, group_mode)
         return build_blotter_columns(), rows, default_grid_options()

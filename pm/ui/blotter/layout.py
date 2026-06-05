@@ -12,12 +12,7 @@ from typing import Optional
 import dash_ag_grid as dag
 from dash import dcc, html
 
-from pm.insight.pattern_groups import (
-    GROUP_LABELS,
-    GROUP_ORDER,
-    PATTERN_GROUP,
-    all_pattern_meta,
-)
+from pm.insight.pattern_groups import GROUP_ORDER
 from pm.store.portfolio_state import PortfolioState
 from pm.ui import state_access as sa
 from pm.ui.blotter.grid import (
@@ -27,13 +22,12 @@ from pm.ui.blotter.grid import (
     sort_rows,
 )
 
-# Short chip labels for the alert-group toggles (the full labels live in
-# GROUP_LABELS and are used by the type picker's group headers).
+# Short chip labels for the alert-group toggles.
 _GROUP_CHIP_LABEL = {
     "position": "Position",
     "market": "Market",
-    "research": "Research",
-    "structural": "Structural",
+    "catalyst": "Catalyst",
+    "informational": "Informational",
 }
 
 
@@ -88,34 +82,6 @@ def _account_picker(rows: list[dict]) -> html.Div:
     ])
 
 
-def _type_options() -> list[dict]:
-    """All alert types, ordered and visually grouped by their group (each group
-    is preceded by a disabled header row). Option value = pattern_id; selecting
-    a type hides it. Static — the inventory doesn't change with the data."""
-    meta = all_pattern_meta()
-    opts: list[dict] = []
-    for g in GROUP_ORDER:
-        opts.append({"label": f"— {GROUP_LABELS[g]} —",
-                     "value": f"__hdr_{g}", "disabled": True})
-        for pid, (name, _tier) in meta.items():
-            if PATTERN_GROUP.get(pid) == g:
-                opts.append({"label": name, "value": pid})
-    return opts
-
-
-def _type_picker() -> html.Div:
-    """Community multi-select of alert types to hide. Empty = nothing hidden."""
-    return html.Div(className="blotter-picker-wrap", children=[
-        html.Span("Types:", className="blotter-control-label"),
-        dcc.Dropdown(
-            id="blotter-type-picker",
-            options=_type_options(),
-            value=[], multi=True, placeholder="All alert types",
-            className="blotter-picker blotter-picker-wide",
-        ),
-    ])
-
-
 def render_blotter_tab(state: Optional[PortfolioState]) -> html.Div:
     """Always renders the controls + grid, even before data loads (state is
     None → empty grid). The grid then fills via the ``blotter-all-rows`` store
@@ -146,7 +112,6 @@ def render_blotter_tab(state: Optional[PortfolioState]) -> html.Div:
             _tier_chips(),
             _group_chips(),
             _account_picker(rows),
-            _type_picker(),
             _grouping_toggle(),
         ]),
         grid,

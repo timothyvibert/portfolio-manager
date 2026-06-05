@@ -34,23 +34,23 @@ PATTERN_GROUP: dict[str, str] = {
     "P11": "market",
     "P13": "market",
     "P15": "market",
-    # Research / catalyst.
-    "P14": "research",
-    # Structural / informational.
-    "P9": "structural",
-    "P12": "structural",
+    # Catalyst — a calendar/event setup (earnings).
+    "P14": "catalyst",
+    # Informational — context, not a direct action.
+    "P9": "informational",
+    "P12": "informational",
 }
 
 # Group key -> display label.
 GROUP_LABELS: dict[str, str] = {
     "position": "Position management",
     "market": "Market / opportunity",
-    "research": "Research / catalyst",
-    "structural": "Structural / informational",
+    "catalyst": "Catalyst",
+    "informational": "Informational",
 }
 
 # Canonical display / control order.
-GROUP_ORDER: tuple[str, ...] = ("position", "market", "research", "structural")
+GROUP_ORDER: tuple[str, ...] = ("position", "market", "catalyst", "informational")
 
 
 def group_for(pattern_id: str) -> Optional[str]:
@@ -63,7 +63,7 @@ def group_for(pattern_id: str) -> Optional[str]:
 def all_pattern_meta() -> dict[str, tuple[str, int]]:
     """pattern_id -> (display name, tier) across the full live inventory (P1-P20):
     the engine patterns plus the structure fires. The single place that unions the
-    two metadata sources — used by the alert-type picker and the inventory guard."""
+    two metadata sources — used by the inventory guard test."""
     from pm.insight.patterns import PATTERN_META
     from pm.insight.structure_fires import _META as STRUCTURE_META
     return {**PATTERN_META, **STRUCTURE_META}

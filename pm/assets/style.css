@@ -624,11 +624,10 @@ html, body {
 }
 .blotter-chips, .blotter-grouping,
 .blotter-groups, .blotter-picker-wrap { display: flex; align-items: center; gap: 6px; }
-/* The account / type multi-selects: Community dcc.Dropdown, sized to sit beside
-   the charcoal chips. (Dash 4's Dropdown is a button-triggered listbox — style
-   the trigger via .dash-dropdown / its data-state, not react-select classes.) */
+/* The account multi-select: Community dcc.Dropdown, sized to sit beside the
+   charcoal chips. (Dash 4's Dropdown is a button-triggered listbox — style the
+   trigger via .dash-dropdown / its data-state, not react-select classes.) */
 .blotter-picker { min-width: 170px; font-size: 12px; }
-.blotter-picker-wide { min-width: 230px; }
 .blotter-picker[data-state="open"] { border-color: var(--pm-charcoal); }
 .blotter-control-label {
     font-size: 11px;
