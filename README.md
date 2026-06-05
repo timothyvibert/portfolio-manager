@@ -17,7 +17,8 @@ two surfaces:
   urgency tier, one row per position. The desk's first stop: what fired
   overnight and where to act.
 - **Account Deep Dive** — a per-account view: a KPI strip, the full position
-  book with merged alerts, portfolio analytics, and recent trades. The follow-up
+  book (viewable by position or grouped into recognized multi-leg structures)
+  with merged alerts, portfolio analytics, and recent trades. The follow-up
   stop: full context on a single account before a client call.
 
 Both surfaces open the same evidence drawer, so any alert or position is one
@@ -43,7 +44,10 @@ click from its full signal tearsheet and the math behind it.
 **Account Deep Dive**
 - KPI strip: NAV, cash %, position/option counts, a net-Greeks one-liner, and
   per-tier alert counts.
-- Institutional position table across every asset class, with alerts merged in.
+- Institutional position table across every asset class, with alerts merged in —
+  viewable **by position** or **by structure** (detected covered calls, collars,
+  verticals, and put structures with their net economics), ordered by attention.
+  Confirming a structure unlocks the management alerts specific to it.
 - Analytics: net dollar Greeks, options premium collected-vs-paid split, an
   expiry ladder (strike-obligation exposure by window), sector breakdown with
   weighted beta, and top concentrations.
@@ -71,8 +75,10 @@ a single Bloomberg pass and sliced per account.
 - **Data handling:** pandas / numpy; Excel via openpyxl.
 
 The app launches immediately and loads market data after first paint, with a
-loading indicator next to the **Refresh BBG** button; refreshes are
-non-blocking, so the current view stays interactive while new data loads.
+loading indicator next to the refresh controls. Two refresh actions are
+available — re-read the latest extract file, or re-pull market data on the
+current extract — and both are non-blocking, so the current view stays
+interactive while new data loads.
 
 ## Requirements
 
