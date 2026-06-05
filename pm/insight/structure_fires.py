@@ -254,6 +254,10 @@ def _fires_for_structure(account_state, st, by_id, rate_curve, rate_fallback, as
                         {"extrinsic_frac_max": _MONETIZE_EXTRINSIC_FRAC}),
                     fired_at))
 
+    # Tag each fire with its originating structure so a later confirm/reject can
+    # add or remove exactly this structure's fires (st is the structure in scope).
+    for f in out:
+        f.structure_id = st.structure_id
     return out
 
 
@@ -269,12 +273,17 @@ _ROLE_ACTION = {
 }
 
 
-def _attach_structure_context(account_state) -> None:
-    """Annotate existing leg fires (P1–P15) whose position is a leg of a CONFIRMED
-    structure, so the framing isn't wrong (e.g. P1 'close for margin' on a covered-call
-    short call gains 'short leg of your covered call — roll or accept assignment'). The
-    ex-div fire (P7) carries its own source-aware dividend copy, so it needs no
-    dividend annotation here — only the structure-leg context below."""
+def attach_structure_context(account_state) -> None:
+    """Annotate leg fires (P1–P15) whose position is a leg of a CONFIRMED structure,
+    so the framing isn't wrong (e.g. P1 'close for margin' on a covered-call short call
+    gains 'short leg of your covered call — roll or accept assignment'). The ex-div fire
+    (P7) carries its own source-aware dividend copy, so it needs no dividend annotation
+    here — only the structure-leg context below.
+
+    Idempotent: each leg fire keeps a clean base rationale (captured the first time it is
+    seen), and every run rebuilds from that base. Re-running after a confirm/reject never
+    doubles the annotation, and a leg that leaves a confirmed structure reverts to its
+    base rationale."""
     leg_ctx: dict[str, tuple] = {}
     for st in account_state.structures:
         if st.status not in _CONFIRMED:
@@ -286,12 +295,45 @@ def _attach_structure_context(account_state) -> None:
     for fire in account_state.fires:
         if getattr(fire, "pattern_id", "") in _META:
             continue  # the structure fires already carry their own context
+        # Rebuild from the clean base: capture it once, then re-annotate from it so
+        # repeated runs neither double the text nor strand a stale annotation.
+        if fire.rationale_base is None:
+            fire.rationale_base = fire.rationale
+        base = fire.rationale_base or ""
         ctx = leg_ctx.get(fire.position_id)
         if ctx:
             typ, role, u = ctx
             action = _ROLE_ACTION.get(role, "part of the structure")
-            fire.rationale = (fire.rationale or "") + (
+            fire.rationale = base + (
                 f"\n\nThis is the {role.replace('_', ' ')} of your {_struct_word(typ)} on {u} — {action}.")
+        else:
+            fire.rationale = base
+
+
+# ---------------------------------------------------------------------------
+# Per-structure re-derivation (shared by the load pass and the confirm/reject path)
+# ---------------------------------------------------------------------------
+def _market_inputs(state):
+    """The already-loaded market inputs the structure fires read: the live treasury
+    curve (carry fire, per-leg DTE) with the config scalar as the BBG-off fallback,
+    and the load timestamp as each fire's fired_at. No fetch — reads the state only."""
+    rate_curve = getattr(state, "risk_free_curve", None) or []
+    rate_fallback = getattr(state, "risk_free_rate", None) or 0.04
+    fired_at = getattr(state, "loaded_at", None) or datetime.now()
+    return rate_curve, rate_fallback, fired_at
+
+
+def rederive_structure_fires(state, account_state, structure, as_of: Optional[date] = None) -> list[Fire]:
+    """Re-derive one structure's management fires from already-loaded market data
+    (snapshot spot, holdings mark, treasury curve / fallback rate) — no Bloomberg
+    fetch. Used when a confirm/reject changes which fires a structure unlocks, so the
+    change can be reflected without a full reload. Returns the structure's fires, each
+    tagged with its structure_id; the caller swaps them in by that id."""
+    as_of = as_of or date.today()
+    rate_curve, rate_fallback, fired_at = _market_inputs(state)
+    by_id = {p.position_id: p for p in account_state.positions}
+    return _fires_for_structure(
+        account_state, structure, by_id, rate_curve, rate_fallback, as_of, fired_at)
 
 
 # ---------------------------------------------------------------------------
@@ -304,14 +346,9 @@ def run_structure_fires(state, as_of: Optional[date] = None) -> None:
     BBG-off fallback, and the as-of date (today in the live app). Mutates state in
     place; the UI reads the fires and never recomputes."""
     as_of = as_of or date.today()
-    rate_curve = getattr(state, "risk_free_curve", None) or []
-    rate_fallback = getattr(state, "risk_free_rate", None) or 0.04
-    fired_at = getattr(state, "loaded_at", None) or datetime.now()
     for account_state in state.accounts.values():
-        by_id = {p.position_id: p for p in account_state.positions}
         new_fires: list[Fire] = []
         for st in account_state.structures:
-            new_fires.extend(_fires_for_structure(
-                account_state, st, by_id, rate_curve, rate_fallback, as_of, fired_at))
+            new_fires.extend(rederive_structure_fires(state, account_state, st, as_of))
         account_state.fires.extend(new_fires)
-        _attach_structure_context(account_state)
+        attach_structure_context(account_state)

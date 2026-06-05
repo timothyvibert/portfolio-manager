@@ -50,6 +50,13 @@ class Fire:
     fired_at: datetime
     skipped: bool = False
     skip_reason: Optional[str] = None
+    # Set on the structure-aware fires (P16–P20) to their originating structure's
+    # id, so confirming/rejecting a structure can add or remove exactly that
+    # structure's fires. None on the per-position / account patterns (P1–P15).
+    structure_id: Optional[str] = None
+    # The rationale before any structure-leg context is appended, captured once so
+    # the annotation can be rebuilt from a clean base — re-running never doubles it.
+    rationale_base: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

@@ -117,9 +117,19 @@ def resolve_structure(
     chosen_type: Optional[str] = None, edited_legs: Optional[list] = None,
 ) -> bool:
     """Confirm / reject / choose-alternative / edit a structure proposal. Writes the
-    resolution through the structure store and re-applies it to the in-memory state's
-    structures (flipping status). Goes through the single state owner here — never a
-    second state holder — and does NOT recompute signals. Returns True on success."""
+    resolution through the structure store, re-applies it to the in-memory state's
+    structures (flipping status), then re-derives that one structure's management fires
+    so the now-eligible fires appear (or the no-longer-eligible ones disappear) without
+    a reload.
+
+    This stays within the no-recompute contract: it is a transactional state update in
+    the single owner, reading only data already on the state (snapshot spot, holdings
+    mark, the treasury curve / fallback rate) — no Bloomberg fetch, no signal recompute.
+    It is idempotent — the affected structure's fires are removed by structure_id and
+    re-derived each time, and the leg-context annotations rebuild from a clean base — so
+    repeated confirm/reject produces no duplicate fires and no doubled annotations.
+    Returns True on success."""
+    from pm.insight.structure_fires import attach_structure_context, rederive_structure_fires
     from pm.store import structure_store
     state = _RUNTIME.get("state")
     if state is None:
@@ -136,6 +146,14 @@ def resolve_structure(
     structure_store.save_resolution(
         account, leg_pids, resolution, chosen_type=chosen_type, edited_legs=edited_legs)
     structure_store.apply_resolutions(account, acc.structures)
+    # Swap in the affected structure's fires by structure_id: drop its prior fires,
+    # then append the freshly re-derived set. Unified across confirm and reject — a
+    # reject re-derives too, so the structure's non-confirmation-gated fires survive
+    # exactly as a full reload would produce them while the gated ones drop. Then
+    # rebuild leg-context annotations from each fire's clean base (idempotent).
+    acc.fires = [f for f in acc.fires if f.structure_id != structure_id]
+    acc.fires.extend(rederive_structure_fires(state, acc, target))
+    attach_structure_context(acc)
     return True
 
 
