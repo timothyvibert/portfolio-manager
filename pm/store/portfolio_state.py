@@ -205,9 +205,14 @@ def load_portfolio_state(
     )
 
     # Run the insight engine, which writes signals + fires onto each
-    # AccountState and may append further warnings.
+    # AccountState and may append further warnings. The engine reads the desk's
+    # persisted threshold overrides (item 11): build_pattern_config layers any
+    # saved overrides over the PatternConfig defaults, so a threshold edit takes
+    # effect on the next reload (the persist-then-reload apply path) — every
+    # reload route (both Refresh buttons -> reload_state -> here) picks them up.
     from pm.insight.engine import run_insight_engine
-    run_insight_engine(state)
+    from pm.store.settings_store import build_pattern_config
+    run_insight_engine(state, build_pattern_config())
 
     # Detect multi-leg structures from the grouped holdings (pure; reads the
     # built positions, writes Structure proposals onto each AccountState).

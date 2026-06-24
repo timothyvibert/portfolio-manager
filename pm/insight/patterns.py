@@ -96,7 +96,6 @@ class PatternConfig:
     p3_return_5d_threshold: float = -0.03
     # P4
     p4_captured_min: float = 0.60
-    p4_target_change_window_days: int = 5
     # P5
     p5_dte_max: int = 45
     p5_captured_min: float = 0.70

@@ -32,6 +32,12 @@ _META = {
     "P20": ("Collar put — monetize", T2),
 }
 _CONFIRMED = ("confirmed", "edited")
+# Structure-fire thresholds. Unlike the P1-P15 PatternConfig dials (now editable via
+# settings_store + the threshold catalog, item 11), these stay module constants for now
+# — item 11 deliberately scoped the editable surface to PatternConfig. Future injection
+# point: a `StructureFireConfig` threaded through run_structure_fires /
+# rederive_structure_fires (and the resolve_structure re-derive in state_access) would
+# make these editable too — not built this increment.
 _PIN_NEAR = 0.02            # |spot-strike|/spot within 2% = near the money
 _PIN_DTE = 1               # expiry-day (or last day)
 _MONETIZE_EXTRINSIC_FRAC = 0.05   # put extrinsic <= 5% of intrinsic (owner threshold)

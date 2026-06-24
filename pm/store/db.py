@@ -6,16 +6,15 @@ distinctly from ``portfolio_state.py`` / the in-memory ``PortfolioState`` (which
 transient, rebuilt on every load) so the two are never confused: this file holds the
 state that must survive a reload.
 
-Today it persists structure confirm/reject resolutions. It is deliberately shaped so
-the next persistent features slot in behind this same seam — a new table plus a thin
-sibling store module reusing :func:`connection`, with no reshaping here:
+Today it persists structure confirm/reject resolutions, alert suppressions, and
+editable alert thresholds (settings). It is deliberately shaped so the next persistent
+features slot in behind this same seam — a new table plus a thin sibling store module
+reusing :func:`connection`, with no reshaping here:
 
-* alert suppressions / dismissals (lifecycle on a fired alert),
-* editable thresholds and preferences (settings),
 * dated holdings/signal snapshots for day-over-day diffs.
 
-Those tables are designed-for but intentionally *not* created yet — see the schema
-notes below.
+That table is designed-for but intentionally *not* created yet — see the schema notes
+below.
 
 ``sqlite3`` is in the Python standard library, so this adds no dependency.
 """
@@ -35,7 +34,7 @@ from pm.config import DATA_DIR
 # follows.
 _DB_PATH = DATA_DIR / "app_store.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Bookkeeping key marking that the one-time pre-SQLite resolutions import has run.
 _LEGACY_RESOLUTIONS_IMPORTED = "structure_resolutions_json_imported"
@@ -64,11 +63,15 @@ def _legacy_resolutions_json() -> Path:
 #                                        so suppressing one pattern on one name leaves
 #                                        every other alert (and that pattern on other
 #                                        names) firing. See pm/store/suppression_store.py.
+#   settings(scope, name, value, ...) -- editable alert thresholds (item 11), keyed by
+#                                        (scope, name) where scope is 'global' for v1
+#                                        (the column is kept so a future per-account
+#                                        scope slots in without reshaping) and name is a
+#                                        PatternConfig field; value is the JSON-encoded
+#                                        override. See pm/store/settings_store.py.
 #
 # Designed for, added later behind this same seam (a new table + a sibling store
 # module reusing connection(); no change to the interface here):
-#   settings(scope, name, value, updated_at)
-#       -- editable thresholds and preferences (value as JSON text).
 #   state_snapshots(snapshot_date, account, payload, created_at)
 #       -- dated holdings/signal snapshots, queried by date for day-over-day diffs.
 _SCHEMA = """
@@ -92,6 +95,13 @@ CREATE TABLE IF NOT EXISTS suppressions (
     captured_trace     TEXT,            -- json.dumps(fire.trace, default=str) at suppress time
     captured_rationale TEXT,            -- fire.rationale (displayed text) at suppress time
     PRIMARY KEY (account, name, pattern_id)   -- the selective key; one row per (acct,name,pattern)
+);
+CREATE TABLE IF NOT EXISTS settings (
+    scope      TEXT NOT NULL,   -- 'global' for v1 (kept so per-account can slot in later)
+    name       TEXT NOT NULL,   -- the PatternConfig field being overridden (e.g. p12_underlying_nav_pct_min)
+    value      TEXT NOT NULL,   -- JSON-encoded scalar override, in PatternConfig-native units
+    updated_at TEXT NOT NULL,   -- ISO-8601 UTC datetime the override was last written
+    PRIMARY KEY (scope, name)   -- one row per (scope, threshold)
 );
 """
 
