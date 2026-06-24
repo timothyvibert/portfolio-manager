@@ -2,10 +2,13 @@
 
 A discrete modal (separate from the per-alert drawer) opened from the top-right
 control cluster. Two tabs: **Suppressed** (the active suppressions, restorable) and
-**Thresholds** (a stub for a later increment). The Suppressed tab is a dense
-``html.Table`` — not a second AG-Grid — matching the signal-sheet / trace design
+**Thresholds** (item 11 — the editable alert-sensitivity dials). Both are dense
+``html.Table``s — not a second AG-Grid — matching the signal-sheet / trace design
 language. Restore here uses the *same* ``state_access.restore_alert`` as the modal's
-Muted footer; there is no second mechanism.
+Muted footer; there is no second mechanism. The Thresholds tab edits the persisted
+overrides via ``settings_store`` and applies them with a persist-then-reload (write the
+override, re-run the engine on the current book) — a deliberate reload, not a UI-layer
+recompute. See ``pm/insight/threshold_catalog.py`` for the dials.
 
 Days-active (today − created_at) is the deliberate staleness cue: a suppression aging
 past usefulness shows it and the user restores it — there is no automatic
@@ -16,10 +19,11 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from dash import html
+from dash import dcc, html
 
+from pm.insight import threshold_catalog as cat
 from pm.insight.pattern_groups import all_pattern_meta
-from pm.store import suppression_store
+from pm.store import settings_store, suppression_store
 
 
 def _days_active(created_at: Optional[str], today: date) -> int:
@@ -79,13 +83,68 @@ def render_suppressed_tab(today: Optional[date] = None) -> html.Div:
         html.Thead(header), html.Tbody(body_rows)])
 
 
+def _thr_input_id(name: str) -> dict:
+    return {"type": "thr-input", "name": name}
+
+
+def _thr_reset_id(name: str) -> dict:
+    return {"type": "thr-reset", "name": name}
+
+
+def _fmt_num(ui_value: float, is_int: bool) -> str:
+    return str(int(round(ui_value))) if is_int else f"{ui_value:g}"
+
+
 def render_thresholds_tab() -> html.Div:
-    """A visible-but-stubbed frame. No threshold logic in this increment."""
-    return html.Div(className="am-stub", children=[
-        html.Div("Editable thresholds", className="am-stub-title"),
-        html.Div("Tuning alert thresholds from here is coming in a later release.",
-                 className="am-stub-note"),
+    """The editable alert-sensitivity dials (item 11), grouped by pattern. Each row seeds
+    its input from the persisted override (if any) else the PatternConfig default; the
+    Default column always shows the default so 'set vs default' is legible. Apply persists
+    the dirty rows and re-runs the engine (persist-then-reload); Reset clears an override.
+
+    Pure read — ``settings_store.get_overrides`` never materializes the DB when nothing is
+    persisted yet, so opening the tab on a clean store is side-effect-free."""
+    overrides = settings_store.get_overrides()        # {name: native} — presence == overridden
+    header = html.Tr([html.Th(h, className="am-th") for h in
+                      ("Threshold", "Value", "Default", "")])
+    body_rows = []
+    for pid, pname, specs in cat.grouped_by_pattern():
+        body_rows.append(html.Tr(className="am-thr-grouprow", children=[
+            html.Td(f"{pid} · {pname}", colSpan=4, className="am-thr-group")]))
+        for s in specs:
+            overridden = s.name in overrides
+            eff_ui = cat.to_ui(s.name, overrides[s.name]) if overridden else cat.default_ui(s.name)
+            body_rows.append(html.Tr(className="am-row am-thr-row", children=[
+                html.Td(s.label, className="am-thr-label"),
+                html.Td(className="am-thr-valcell", children=[
+                    # No HTML min/max: an out-of-range entry must still commit so the
+                    # server-side catalog can clamp it (a number input with max silently
+                    # refuses out-of-range values, which would look like a no-op). The
+                    # catalog is the authoritative bound.
+                    dcc.Input(
+                        id=_thr_input_id(s.name), type="number", value=eff_ui,
+                        step=(1 if s.is_int else "any"), debounce=True,
+                        className="am-thr-input" + (" am-thr-input-set" if overridden else "")),
+                    html.Span(s.unit, className="am-thr-unit"),
+                ]),
+                html.Td(f"{_fmt_num(cat.default_ui(s.name), s.is_int)} {s.unit}".strip(),
+                        className="am-thr-default"),
+                html.Td(html.Button("Reset", id=_thr_reset_id(s.name), n_clicks=0,
+                                    disabled=not overridden,
+                                    className="alert-action-btn am-thr-reset-btn")),
+            ]))
+    table = html.Table(className="am-table am-thr-table",
+                       children=[html.Thead(header), html.Tbody(body_rows)])
+    actions = html.Div(className="am-thr-actions", children=[
+        html.Div("Applying re-runs the engine on the current book and re-paints the alerts.",
+                 className="am-thr-note"),
+        html.Div(className="am-thr-buttons", children=[
+            html.Button("Reset all", id="am-thr-reset-all", n_clicks=0,
+                        className="alert-action-btn am-thr-resetall-btn"),
+            html.Button("Apply", id="am-thr-apply", n_clicks=0,
+                        className="alert-action-btn am-thr-apply-btn"),
+        ]),
     ])
+    return html.Div(className="am-thr-wrap", children=[table, actions])
 
 
 def render_alert_manager_body(tab: str = "suppressed",

@@ -910,6 +910,45 @@ html, body {
 .am-stub-title { font-size: 14px; font-weight: 600; color: var(--pm-charcoal); margin-bottom: 8px; }
 .am-stub-note { font-size: 12.5px; color: var(--pm-grey-500); }
 
+/* Item 11 — Alert Manager Thresholds tab (editable alert-sensitivity dials).
+   Inherits the dense am-table look; controls are quieter than the data, charcoal-neutral. */
+.am-thr-group {
+    padding: 13px 10px 5px;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 700;
+    color: var(--pm-accent);
+    border-bottom: 1px solid var(--pm-grey-300);
+}
+.am-thr-grouprow:first-child .am-thr-group { padding-top: 2px; }
+.am-thr-label { color: var(--pm-charcoal); }
+.am-thr-valcell { white-space: nowrap; }
+.am-thr-input {
+    width: 78px;
+    border: 1px solid var(--pm-grey-300);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--pm-charcoal);
+}
+.am-thr-input:focus { outline: none; border-color: var(--pm-accent); }
+.am-thr-input-set { border-color: var(--pm-accent); font-weight: 600; }  /* overridden -> distinct */
+.am-thr-unit { margin-left: 6px; font-size: 11px; color: var(--pm-grey-500); }
+.am-thr-default { text-align: right; color: var(--pm-grey-500); font-variant-numeric: tabular-nums; }
+.am-thr-reset-btn { padding: 2px 10px; }
+.am-thr-reset-btn:disabled { opacity: 0.4; cursor: default; }
+.am-thr-actions {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--pm-grey-300); gap: 12px;
+}
+.am-thr-note { font-size: 11.5px; color: var(--pm-grey-500); }
+.am-thr-buttons { display: flex; gap: 8px; }
+.am-thr-apply-btn { background: var(--pm-accent); color: white; border-color: var(--pm-accent); }
+.am-thr-apply-btn:hover { background: var(--pm-charcoal); color: white; }
+
 .drawer-section { margin-bottom: 18px; }
 .drawer-section-label {
     font-size: 11px;

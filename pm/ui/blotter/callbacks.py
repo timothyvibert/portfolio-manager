@@ -8,7 +8,9 @@ from __future__ import annotations
 import dash
 from dash import ALL, MATCH, Input, Output, State, ctx, html, no_update
 
+from pm.insight import threshold_catalog as _cat
 from pm.insight.pattern_groups import GROUP_ORDER
+from pm.store import settings_store as _settings
 from pm.ui import state_access as sa
 from pm.ui.blotter.grid import (
     apply_account_filter,
@@ -482,6 +484,78 @@ def register_callbacks(app: dash.Dash) -> None:
         blotter_rows = consolidate_fires_to_rows(sa.all_fires(state), state)
         dd_rows = _dd_grid_rows(state, dd_account, pos_view, expanded)
         return body, blotter_rows, dd_rows
+
+    # ---- Thresholds tab (item 11): edit dials -> persist -> reload -> re-paint --
+    # Apply / Reset all / per-row Reset all flow through one callback. Each MUTATES the
+    # persisted overrides (settings_store) then re-runs the engine on the current book via
+    # reload_state — the persist-then-reload apply path. This is a deliberate reload (the
+    # same route the Refresh buttons use), NOT a UI-layer recompute: changing a threshold
+    # changes which fires the engine PRODUCES, so it cannot be applied by re-marking.
+    # Outputs target only always-present components (the manager body/tabs, the status
+    # host, the blotter store, the deep-dive refresh tick, the load sentinel). The
+    # deep-dive grid is NOT written directly: dcc.Tabs only mounts the active tab, so on
+    # the Blotter tab that grid is absent and a direct write would make Dash reject the
+    # whole callback. Bumping deepdive-refresh-tick (a store) drives the Tab-2 repopulate
+    # callback instead — the same mechanism the Refresh buttons use.
+    @app.callback(
+        Output("alert-manager-body", "children", allow_duplicate=True),
+        Output("am-tab-suppressed", "className", allow_duplicate=True),
+        Output("am-tab-thresholds", "className", allow_duplicate=True),
+        Output("status-bar-host", "children", allow_duplicate=True),
+        Output("blotter-all-rows", "data", allow_duplicate=True),
+        Output("deepdive-refresh-tick", "data", allow_duplicate=True),
+        Output("bbg-load-sentinel", "children", allow_duplicate=True),
+        Input("am-thr-apply", "n_clicks"),
+        Input("am-thr-reset-all", "n_clicks"),
+        Input({"type": "thr-reset", "name": ALL}, "n_clicks"),
+        State({"type": "thr-input", "name": ALL}, "value"),
+        State({"type": "thr-input", "name": ALL}, "id"),
+        State("deepdive-refresh-tick", "data"),
+        prevent_initial_call=True,
+    )
+    def _apply_thresholds(_apply, _reset_all, _row_resets, values, ids, tick):
+        noop = (no_update,) * 7
+        trig = ctx.triggered_id
+        # Ignore the spurious fire when the inputs/buttons are (re)created with n_clicks 0.
+        if not (ctx.triggered[0] if ctx.triggered else {}).get("value"):
+            return noop
+
+        if trig == "am-thr-reset-all":
+            _settings.clear_all()
+        elif isinstance(trig, dict) and trig.get("type") == "thr-reset":
+            _settings.clear_override(trig["name"])
+        elif trig == "am-thr-apply":
+            for val, cid in zip(values or [], ids or []):
+                name = (cid or {}).get("name")
+                if name is None or not _cat.is_editable(name):
+                    continue
+                if val is None:                       # blank input -> revert to default
+                    _settings.clear_override(name)
+                    continue
+                try:
+                    # Editing a dial back to its default clears the override (keeps the
+                    # store minimal and 'set vs default' honest); else persist it.
+                    if abs(float(val) - _cat.default_ui(name)) < 1e-9:
+                        _settings.clear_override(name)
+                    else:
+                        _settings.set_override(name, val)   # validates + clamps via catalog
+                except (ValueError, TypeError):
+                    continue
+        else:
+            return noop
+
+        # Persist-then-reload: re-evaluate the current book under the new thresholds.
+        try:
+            new_state = sa.reload_state(reuse_extract=True)
+        except Exception as exc:
+            return (no_update, no_update, no_update,
+                    html.Div(f"Apply failed: {exc}", className="status-left status-empty"),
+                    no_update, no_update, "")
+        s_cls, t_cls = _am_tab_classes("thresholds")
+        body = render_alert_manager_body("thresholds")          # reseed inputs from persisted
+        rows = consolidate_fires_to_rows(sa.all_fires(new_state), new_state)
+        return (body, s_cls, t_cls, render_status_bar(new_state), rows,
+                (tick or 0) + 1, "")
 
     # The manager's own Escape listener, bound to its own id (independent of the
     # drawer's). On Escape it closes only the manager, only when the manager is open.
