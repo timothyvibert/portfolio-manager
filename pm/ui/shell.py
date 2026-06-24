@@ -61,6 +61,34 @@ def _drawer_root() -> html.Div:
     ])
 
 
+def _alert_manager_root() -> html.Div:
+    """The Alert Manager modal — a SEPARATE centered modal from the per-alert drawer.
+
+    It reuses the same centered-box / overlay CSS (``drawer-root`` / ``drawer-panel``)
+    but has its own id, its own open/close callback and its own Escape listener, so it
+    never cross-toggles the drawer. Header = a Suppressed | Thresholds tab strip + ✕;
+    the body is rendered on open.
+    """
+    return html.Div(id="alert-manager-root", className="drawer-root", children=[
+        html.Div(id="alert-manager-overlay", className="drawer-overlay", n_clicks=0),
+        html.Div(className="drawer-panel am-panel", children=[
+            html.Div(className="drawer-headerbar", children=[
+                html.Div(className="view-toggle am-tabs", children=[
+                    html.Button("Suppressed", id="am-tab-suppressed", n_clicks=0,
+                                className="view-toggle-btn view-toggle-btn-active"),
+                    html.Button("Thresholds", id="am-tab-thresholds", n_clicks=0,
+                                className="view-toggle-btn"),
+                ]),
+                html.Button("✕", id="alert-manager-close-btn", n_clicks=0,
+                            className="drawer-close-btn"),
+            ]),
+            html.Div(id="alert-manager-body", className="am-body"),
+        ]),
+        # Dummy output for the manager's own one-time Escape listener.
+        dcc.Store(id="am-esc-dummy"),
+    ])
+
+
 def build_shell(state: Optional[PortfolioState]) -> html.Div:
     initial_rows = consolidate_fires_to_rows(sa.all_fires(state), state) if state else []
 
@@ -103,6 +131,9 @@ def build_shell(state: Optional[PortfolioState]) -> html.Div:
                             className="status-refresh-btn",
                             title="Re-pull market data on the current extract "
                                   "(does not switch to a newer file)."),
+                html.Button("Alert Manager", id="alert-manager-open-btn", n_clicks=0,
+                            className="status-refresh-btn",
+                            title="Review and restore suppressed / snoozed alerts."),
             ]),
         ]),
 
@@ -116,4 +147,5 @@ def build_shell(state: Optional[PortfolioState]) -> html.Div:
         ]),
 
         _drawer_root(),
+        _alert_manager_root(),
     ])

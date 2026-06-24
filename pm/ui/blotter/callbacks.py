@@ -23,6 +23,7 @@ from pm.ui.blotter.grid import (
 )
 from pm.ui.components.status_bar import render_status_bar
 from pm.ui.deepdive.header import account_options
+from pm.ui.drawers.alert_manager import render_alert_manager_body
 from pm.ui.drawers.evidence import render_alerts, _snooze_until
 from pm.ui.drawers.signal_sheet import render_signal_sheet
 
@@ -413,6 +414,98 @@ def register_callbacks(app: dash.Dash) -> None:
     )
     def _reveal_snooze_date(value):
         return {"display": "inline-block"} if value == "pick" else {"display": "none"}
+
+    # ---- Alert Manager (item 9, Part C) -----------------------------------
+    # A SEPARATE modal from the per-alert drawer: its own root, open/close, tab
+    # strip and Escape listener, so it never cross-toggles the drawer. The
+    # Suppressed tab restores via the SAME state_access.restore_alert the modal
+    # footer uses. Active classes are derived from which tab is shown.
+    _AM_OPEN = "drawer-root drawer-open"
+
+    def _am_tab_classes(tab):
+        return ("view-toggle-btn" + (" view-toggle-btn-active" if tab == "suppressed" else ""),
+                "view-toggle-btn" + (" view-toggle-btn-active" if tab == "thresholds" else ""))
+
+    @app.callback(
+        Output("alert-manager-root", "className"),
+        Output("alert-manager-body", "children"),
+        Output("am-tab-suppressed", "className"),
+        Output("am-tab-thresholds", "className"),
+        Input("alert-manager-open-btn", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _open_alert_manager(_n):
+        s_cls, t_cls = _am_tab_classes("suppressed")
+        return _AM_OPEN, render_alert_manager_body("suppressed"), s_cls, t_cls
+
+    @app.callback(
+        Output("alert-manager-root", "className", allow_duplicate=True),
+        Input("alert-manager-close-btn", "n_clicks"),
+        Input("alert-manager-overlay", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _close_alert_manager(_c, _o):
+        return "drawer-root"
+
+    @app.callback(
+        Output("alert-manager-body", "children", allow_duplicate=True),
+        Output("am-tab-suppressed", "className", allow_duplicate=True),
+        Output("am-tab-thresholds", "className", allow_duplicate=True),
+        Input("am-tab-suppressed", "n_clicks"),
+        Input("am-tab-thresholds", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _switch_am_tab(_s, _t):
+        tab = "thresholds" if ctx.triggered_id == "am-tab-thresholds" else "suppressed"
+        s_cls, t_cls = _am_tab_classes(tab)
+        return render_alert_manager_body(tab), s_cls, t_cls
+
+    @app.callback(
+        Output("alert-manager-body", "children", allow_duplicate=True),
+        Output("blotter-all-rows", "data", allow_duplicate=True),
+        Output("deepdive-positions-grid", "rowData", allow_duplicate=True),
+        Input({"type": "am-restore", "account": ALL, "name": ALL, "pat": ALL}, "n_clicks"),
+        State("deepdive-account-picker", "value"),
+        State("pos-view-mode", "data"),
+        State("struct-expanded", "data"),
+        prevent_initial_call=True,
+    )
+    def _restore_from_manager(_n, dd_account, pos_view, expanded):
+        trig = ctx.triggered_id
+        state = sa.get_state()
+        if not isinstance(trig, dict) or state is None:
+            return no_update, no_update, no_update
+        if not (ctx.triggered[0] if ctx.triggered else {}).get("value"):
+            return no_update, no_update, no_update
+        sa.restore_alert(trig["account"], trig["name"], trig["pat"])
+        body = render_alert_manager_body("suppressed")
+        blotter_rows = consolidate_fires_to_rows(sa.all_fires(state), state)
+        dd_rows = _dd_grid_rows(state, dd_account, pos_view, expanded)
+        return body, blotter_rows, dd_rows
+
+    # The manager's own Escape listener, bound to its own id (independent of the
+    # drawer's). On Escape it closes only the manager, only when the manager is open.
+    app.clientside_callback(
+        """
+        function(_id) {
+            if (!window._pmAmEscBound) {
+                window._pmAmEscBound = true;
+                document.addEventListener('keydown', function(e) {
+                    if (e.key === 'Escape') {
+                        var root = document.getElementById('alert-manager-root');
+                        if (root && root.className.indexOf('drawer-open') !== -1) {
+                            var btn = document.getElementById('alert-manager-close-btn');
+                            if (btn) { btn.click(); }
+                        }
+                    }
+                });
+            }
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("am-esc-dummy", "data"),
+        Input("alert-manager-root", "id"),
+    )
 
     # ---- Initial load OR Refresh BBG → load state + status + rows + Tab 2 --
     # One callback backs both the one-shot post-render load and the manual

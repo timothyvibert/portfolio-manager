@@ -882,6 +882,34 @@ html, body {
 .muted-line-state { color: var(--pm-grey-500); font-style: italic; }
 .muted-restore-btn { margin-left: auto; }
 
+/* Item 9 — Alert Manager (Part C). Reuses the drawer overlay/centering; the panel
+   is sized down from the per-alert modal and the Suppressed tab is a dense table. */
+.am-panel { width: 860px; height: auto; max-height: 82vh; }
+.am-tabs { gap: 0; }
+.am-body { padding: 14px 16px; overflow-y: auto; }
+.am-empty { padding: 48px 10px; text-align: center; color: var(--pm-grey-500); font-size: 13px; }
+.am-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.am-th {
+    text-align: left;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--pm-grey-500);
+    border-bottom: 1px solid var(--pm-grey-300);
+    padding: 6px 10px;
+}
+.am-row { border-bottom: 1px solid var(--pm-grey-100); }
+.am-row:hover { background: var(--pm-grey-50); }
+.am-row td { padding: 6px 10px; vertical-align: middle; }
+.am-acct { font-family: "Consolas", monospace; font-weight: 600; }
+.am-name { font-weight: 600; color: var(--pm-charcoal); }
+.am-state { color: var(--pm-grey-700); }
+.am-days { text-align: right; font-variant-numeric: tabular-nums; color: var(--pm-grey-700); }
+.am-restore-btn { padding: 2px 12px; }
+.am-stub { padding: 56px 16px; text-align: center; }
+.am-stub-title { font-size: 14px; font-weight: 600; color: var(--pm-charcoal); margin-bottom: 8px; }
+.am-stub-note { font-size: 12.5px; color: var(--pm-grey-500); }
+
 .drawer-section { margin-bottom: 18px; }
 .drawer-section-label {
     font-size: 11px;
