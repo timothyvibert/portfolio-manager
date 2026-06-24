@@ -21,6 +21,7 @@ from datetime import date
 from dash import dcc, html
 
 from pm.insight import structures as S
+from pm.store.suppression_store import is_active
 from pm.ui.blotter.grid import format_position_descriptor
 from pm.ui.deepdive.formatters import MONEY_FULL_FMT, QTY_FMT, SIGNED_COLOR_STYLE
 from pm.ui.deepdive.structure_economics import (
@@ -211,8 +212,9 @@ def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]
 
     # Tier-1 attention set, built once for the account: structures a T1 fire targets
     # by structure_id, and positions a T1 fire lands on (a structure inherits attention
-    # from a fire on any of its legs). Read-only over already-loaded fires.
-    fires = list(getattr(account_state, "fires", []) or [])
+    # from a fire on any of its legs). Read-only over already-loaded fires; a
+    # suppressed/snoozed T1 fire (item 9) no longer floats its structure.
+    fires = [f for f in (getattr(account_state, "fires", []) or []) if is_active(f)]
     t1_sids = {f.structure_id for f in fires if f.tier == 1 and f.structure_id}
     t1_pids = {f.position_id for f in fires if f.tier == 1}
 

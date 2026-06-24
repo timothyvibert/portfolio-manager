@@ -35,7 +35,7 @@ from pm.config import DATA_DIR
 # follows.
 _DB_PATH = DATA_DIR / "app_store.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Bookkeeping key marking that the one-time pre-SQLite resolutions import has run.
 _LEGACY_RESOLUTIONS_IMPORTED = "structure_resolutions_json_imported"
@@ -58,11 +58,15 @@ def _legacy_resolutions_json() -> Path:
 #                                        account || sorted leg-set (the composite key
 #                                        is stored verbatim as the row key so the
 #                                        apply-resolutions logic is unchanged).
+#   suppressions(account, name, pattern_id, ...) -- per-alert suppress / snooze (item 9),
+#                                        keyed by (account, name, pattern_id) where
+#                                        name == fire.underlying; selective by design,
+#                                        so suppressing one pattern on one name leaves
+#                                        every other alert (and that pattern on other
+#                                        names) firing. See pm/store/suppression_store.py.
 #
 # Designed for, added later behind this same seam (a new table + a sibling store
 # module reusing connection(); no change to the interface here):
-#   suppressions(account, position_id, pattern_id, suppressed_until, reason, created_at)
-#       -- alert lifecycle / dismissals.
 #   settings(scope, name, value, updated_at)
 #       -- editable thresholds and preferences (value as JSON text).
 #   state_snapshots(snapshot_date, account, payload, created_at)
@@ -79,13 +83,28 @@ CREATE TABLE IF NOT EXISTS structure_resolutions (
     edited_legs TEXT,               -- JSON array of kept position_ids, or NULL
     timestamp   TEXT                -- ISO-8601 UTC
 );
+CREATE TABLE IF NOT EXISTS suppressions (
+    account            TEXT NOT NULL,   -- the account the alert fired in
+    name               TEXT NOT NULL,   -- == fire.underlying; suppression is per-name
+    pattern_id         TEXT NOT NULL,   -- the pattern (P1..P20) being silenced on that name
+    suppressed_until   TEXT,            -- NULL = permanent suppress; 'YYYY-MM-DD' = snooze through
+    created_at         TEXT NOT NULL,   -- ISO-8601 UTC datetime the suppression was set
+    captured_trace     TEXT,            -- json.dumps(fire.trace, default=str) at suppress time
+    captured_rationale TEXT,            -- fire.rationale (displayed text) at suppress time
+    PRIMARY KEY (account, name, pattern_id)   -- the selective key; one row per (acct,name,pattern)
+);
 """
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    # Upsert (not INSERT OR IGNORE) so meta.schema_version tracks the CURRENT schema:
+    # a DB created under an earlier version is brought up to SCHEMA_VERSION on the
+    # next open, not left stale. The tables themselves are additive (CREATE TABLE IF
+    # NOT EXISTS), so this only corrects the recorded version.
     conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        "INSERT INTO meta(key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         ("schema_version", str(SCHEMA_VERSION)),
     )
 

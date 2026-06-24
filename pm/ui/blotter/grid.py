@@ -19,6 +19,7 @@ from pm.ingest.position_builder import Position
 from pm.insight.pattern_groups import GROUP_ORDER, PATTERN_GROUP
 from pm.insight.patterns import Fire
 from pm.store.portfolio_state import PortfolioState
+from pm.store.suppression_store import is_active
 from pm.ui import state_access as sa
 
 
@@ -274,7 +275,13 @@ def consolidate_fires_to_rows(fires: list[Fire], state: PortfolioState) -> list[
     (lowest tier number); ``pattern_name`` is the primary (most-severe) fire's
     pattern (used for Pattern grouping/sort). Hidden ``_fire_ids`` lists the
     fires' pattern_ids (most-severe first) so the modal can render all of them.
-    Unsorted — ``sort_rows`` orders the result per the active grouping."""
+    Unsorted — ``sort_rows`` orders the result per the active grouping.
+
+    Suppressed/snoozed fires (item 9) are dropped up front, so cells, counts, tier
+    and the per-row alert list are all derived from the active set — a position whose
+    every alert is muted produces no blotter row. When nothing is suppressed this is a
+    no-op and the output is byte-identical to before."""
+    fires = [f for f in fires if is_active(f)]
     groups: dict[tuple, list[Fire]] = {}
     order: list[tuple] = []
     for f in fires:

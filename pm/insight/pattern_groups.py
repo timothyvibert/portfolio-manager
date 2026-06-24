@@ -43,8 +43,8 @@ PATTERN_GROUP: dict[str, str] = {
 
 # Group key -> display label.
 GROUP_LABELS: dict[str, str] = {
-    "position": "Position management",
-    "market": "Market / opportunity",
+    "position": "Position",
+    "market": "Market",
     "catalyst": "Catalyst",
     "informational": "Informational",
 }

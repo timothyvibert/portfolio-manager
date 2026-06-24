@@ -44,6 +44,7 @@ CLAUDE.md
 requirements-dev.txt
 INVENTORY.md
 pm/**/tests/
+pm/conftest.py
 pm/docs/
 pm/_archive_v0_10/
 pm/smoke_phase2.py

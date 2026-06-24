@@ -36,6 +36,20 @@ from pm.insight.signal_library import SignalDict, SignalValue
 # ---------------------------------------------------------------------------
 
 @dataclass
+class SuppressionMark:
+    """Marks a Fire as muted by a persisted alert suppression (item 9).
+
+    Attached by ``suppression_store.apply_suppressions`` in the load path *after*
+    the engine has produced the fire — the fire is never removed from
+    ``acc.fires``, so a restore (or snooze expiry) plus a re-apply brings it
+    straight back (the no-recompute contract). ``None`` on ``Fire.suppression``
+    means the alert is active.
+    """
+    kind: str                      # "suppressed" (permanent) | "snoozed" (dated)
+    until: Optional[str] = None    # 'YYYY-MM-DD' when snoozed; None when permanent
+
+
+@dataclass
 class Fire:
     pattern_id: str
     pattern_name: str
@@ -57,6 +71,11 @@ class Fire:
     # The rationale before any structure-leg context is appended, captured once so
     # the annotation can be rebuilt from a clean base — re-running never doubles it.
     rationale_base: Optional[str] = None
+    # Item 9: set by suppression_store.apply_suppressions when an active suppression
+    # matches (account, underlying, pattern_id). None = active alert. The fire stays
+    # in acc.fires either way — active surfaces filter it out (suppression_store.
+    # is_active), the modal's Muted footer and the Alert Manager show it to restore.
+    suppression: Optional[SuppressionMark] = None
 
 
 # ---------------------------------------------------------------------------

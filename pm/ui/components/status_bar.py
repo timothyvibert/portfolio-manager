@@ -13,6 +13,7 @@ from dash import html
 
 from pm.ingest.adw_loader import URGENT_FLAG
 from pm.store.portfolio_state import PortfolioState
+from pm.store.suppression_store import is_active
 from pm.ui import state_access as sa
 
 
@@ -23,12 +24,16 @@ def render_status_bar(state: Optional[PortfolioState]) -> html.Div:
     if state is None:
         return html.Div("Loading portfolio…", className="status-left status-empty")
 
-    fires = sa.all_fires(state)
+    # Active alerts only (item 9): a suppressed/snoozed fire is excluded from every
+    # headline count, so muting an alert drops the strip's totals exactly as it drops
+    # the blotter row. The Alert Manager (days-active) is the muted-review surface, so
+    # no muted count belongs here.
+    fires = [f for f in sa.all_fires(state) if is_active(f)]
     n_t1 = sum(1 for f in fires if f.tier == 1)
     n_t2 = sum(1 for f in fires if f.tier == 2)
     n_t3 = sum(1 for f in fires if f.tier == 3)
     n_positions = sum(len(a.positions) for a in state.accounts.values())
-    # Flagged positions = consolidated blotter rows (one per position with ≥1
+    # Flagged positions = consolidated blotter rows (one per position with ≥1 active
     # alert) — explains why the table shows fewer rows than fires.
     n_flagged = len({(f.account, f.position_id) for f in fires})
 

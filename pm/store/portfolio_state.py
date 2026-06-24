@@ -220,6 +220,13 @@ def load_portfolio_state(
     from pm.insight.structure_fires import run_structure_fires
     run_structure_fires(state)
 
+    # Apply persisted alert suppressions (item 9): mark each fire whose
+    # (account, underlying, pattern_id) is actively suppressed or snoozed. Runs
+    # AFTER the engine, so it only flags already-computed fires — no recompute,
+    # no Bloomberg — and an un-suppress brings the fire straight back next load.
+    from pm.store.suppression_store import apply_suppressions
+    apply_suppressions(state)
+
     return state
 
 

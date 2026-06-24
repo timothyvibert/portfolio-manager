@@ -16,6 +16,7 @@ from typing import Optional
 import dash_ag_grid as dag
 from dash import html
 
+from pm.store.suppression_store import is_active
 from pm.ui import state_access as sa
 from pm.ui.blotter.grid import format_position_descriptor
 from pm.ui.deepdive.actionables import summary_line
@@ -137,8 +138,14 @@ def build_positions_rows(account_state, state) -> list[dict]:
     nav = abs(account_state.nav) if account_state.nav else 0.0
 
     # fires-on-position index (severity-ordered, for the merged Alerts cell).
+    # Suppressed/snoozed fires (item 9) are skipped so the Alerts cell, the
+    # alert badge (_has_fires/_alert_tier) and the click routing reflect only
+    # active alerts. The position itself still renders — By Position is the
+    # holdings book, so a fully-muted position stays as a row with no alerts.
     fires_by_pos: dict[str, list] = {}
     for f in account_state.fires:
+        if not is_active(f):
+            continue
         fires_by_pos.setdefault(f.position_id, []).append(f)
 
     rows: list[dict] = []
