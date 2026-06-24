@@ -904,6 +904,7 @@ html, body {
 .am-acct { font-family: "Consolas", monospace; font-weight: 600; }
 .am-name { font-weight: 600; color: var(--pm-charcoal); }
 .am-state { color: var(--pm-grey-700); }
+.am-state-resurfaced { color: var(--pm-urgent); font-weight: 600; }  /* item 12: condition moved */
 .am-days { text-align: right; font-variant-numeric: tabular-nums; color: var(--pm-grey-700); }
 .am-restore-btn { padding: 2px 12px; }
 .am-stub { padding: 56px 16px; text-align: center; }

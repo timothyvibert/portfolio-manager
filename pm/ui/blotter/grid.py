@@ -251,6 +251,9 @@ def _alert_entries(group: list[Fire]) -> list[dict]:
             "group": PATTERN_GROUP.get(f.pattern_id),
             "name": f.pattern_name,
             "tier": f.tier,
+            # item 12: this alert was muted but its condition moved materially, so it is
+            # active again — tag it so the desk sees it returned by a move, not afresh.
+            "resurfaced": getattr(f.suppression, "kind", None) == "resurfaced",
         })
     return entries
 
@@ -260,8 +263,11 @@ def _row_alert_fields(entries: list[dict]) -> dict:
     entries. Shared by the row builder and the alert-level filter so the two can
     never diverge — the default (nothing hidden) render is byte-identical to a
     rebuild over the same entries. ``entries`` must be non-empty."""
+    # A discreet, plain-English tag when any alert here re-surfaced (item 12) — quieter
+    # than the tier badge; empty (so byte-identical) when nothing has re-surfaced.
+    resurfaced = any(e.get("resurfaced") for e in entries)
     return {
-        "alerts": ", ".join(e["name"] for e in entries),
+        "alerts": ", ".join(e["name"] for e in entries) + (" · re-surfaced" if resurfaced else ""),
         "tier": min(e["tier"] for e in entries),       # row tier = max severity
         "pattern_name": entries[0]["name"],             # primary, for grouping/sort
         "_primary_pattern_id": entries[0]["pattern_id"],

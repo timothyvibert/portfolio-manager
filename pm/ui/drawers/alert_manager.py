@@ -24,6 +24,7 @@ from dash import dcc, html
 from pm.insight import threshold_catalog as cat
 from pm.insight.pattern_groups import all_pattern_meta
 from pm.store import settings_store, suppression_store
+from pm.ui import state_access as sa
 
 
 def _days_active(created_at: Optional[str], today: date) -> int:
@@ -38,7 +39,32 @@ def _days_active(created_at: Optional[str], today: date) -> int:
     return max(0, (today - started).days)
 
 
-def _state_text(record: dict) -> str:
+def _live_mark(state, record: dict):
+    """The live ``Fire.suppression`` mark for a stored suppression, or None. Lets the tab
+    show a re-surfaced row's third state by reading what the load-path pass computed."""
+    if state is None:
+        return None
+    acc = state.accounts.get(record["account"])
+    if acc is None:
+        return None
+    for f in acc.fires:
+        if f.underlying == record["name"] and f.pattern_id == record["pattern_id"]:
+            return f.suppression
+    return None
+
+
+def _fmt_delta(v) -> str:
+    if isinstance(v, str):       # event dates ride as ISO strings
+        return v
+    try:
+        return f"{float(v):.3g}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _state_text(record: dict, mark=None) -> str:
+    if getattr(mark, "kind", None) == "resurfaced":
+        return f"Re-surfaced — moved {_fmt_delta(mark.captured_value)} → {_fmt_delta(mark.current_value)}"
     until = record.get("suppressed_until")
     return f"Snoozed until {until}" if until else "Suppressed"
 
@@ -52,6 +78,7 @@ def render_suppressed_tab(today: Optional[date] = None) -> html.Div:
     """The active suppressions, sorted/grouped by account. Empty → a neutral note."""
     today = today or date.today()
     meta = all_pattern_meta()
+    state = sa.get_state()      # to read each suppression's live mark (re-surfaced state)
     records = sorted(suppression_store.active_suppressions(today).values(),
                      key=lambda r: (r["account"], r["name"], r["pattern_id"]))
     if not records:
@@ -66,6 +93,9 @@ def render_suppressed_tab(today: Optional[date] = None) -> html.Div:
         # captured_rationale surfaced as a row tooltip — what the alert looked like
         # when it was muted, so a long-lived suppression can be eyeballed.
         rationale = (r.get("captured_rationale") or "").strip()
+        mark = _live_mark(state, r)
+        resurfaced = getattr(mark, "kind", None) == "resurfaced"
+        state_cls = "am-state am-state-resurfaced" if resurfaced else "am-state"
         body_rows.append(html.Tr(
             className="am-row",
             title=rationale or None,
@@ -73,7 +103,7 @@ def render_suppressed_tab(today: Optional[date] = None) -> html.Div:
                 html.Td(r["account"], className="am-acct"),
                 html.Td(r["name"], className="am-name"),
                 html.Td(alert_type, className="am-type"),
-                html.Td(_state_text(r), className="am-state"),
+                html.Td(_state_text(r, mark), className=state_cls),
                 html.Td(str(_days_active(r.get("created_at"), today)), className="am-days"),
                 html.Td(html.Button("Restore", id=_restore_id(r), n_clicks=0,
                                     className="alert-action-btn am-restore-btn")),
