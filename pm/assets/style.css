@@ -845,6 +845,43 @@ html, body {
 .drawer-header-sub { font-size: 13px; color: var(--pm-grey-700); margin-top: 6px; }
 .drawer-account { font-family: "Consolas", monospace; font-weight: 600; }
 
+/* Item 9 — per-alert suppress controls (right of the tier badge) + Muted footer.
+   Charcoal-neutral, deliberately quieter than the tier badge. */
+.alert-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.alert-action-btn {
+    background: white;
+    border: 1px solid var(--pm-grey-300);
+    color: var(--pm-grey-700);
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.alert-action-btn:hover {
+    background: var(--pm-grey-100);
+    border-color: var(--pm-accent);
+    color: var(--pm-accent);
+}
+.alert-snooze-dd { width: 132px; font-size: 11px; }
+.alert-snooze-date { font-size: 11px; }
+
+.muted-footer { margin-top: 18px; border-top: 1px dashed var(--pm-grey-300); padding-top: 10px; }
+.muted-footer-summary {
+    cursor: pointer;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--pm-grey-500);
+    font-weight: 700;
+}
+.muted-footer-lines { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+.muted-line { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.muted-line-pid { font-family: "Consolas", monospace; font-weight: 700; color: var(--pm-grey-500); }
+.muted-line-name { color: var(--pm-charcoal); }
+.muted-line-state { color: var(--pm-grey-500); font-style: italic; }
+.muted-restore-btn { margin-left: auto; }
+
 .drawer-section { margin-bottom: 18px; }
 .drawer-section-label {
     font-size: 11px;

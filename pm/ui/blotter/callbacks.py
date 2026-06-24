@@ -6,7 +6,7 @@ reads state through ``state_access`` and never recomputes.
 from __future__ import annotations
 
 import dash
-from dash import Input, Output, State, ctx, html, no_update
+from dash import ALL, MATCH, Input, Output, State, ctx, html, no_update
 
 from pm.insight.pattern_groups import GROUP_ORDER
 from pm.ui import state_access as sa
@@ -23,7 +23,7 @@ from pm.ui.blotter.grid import (
 )
 from pm.ui.components.status_bar import render_status_bar
 from pm.ui.deepdive.header import account_options
-from pm.ui.drawers.evidence import render_alerts
+from pm.ui.drawers.evidence import render_alerts, _snooze_until
 from pm.ui.drawers.signal_sheet import render_signal_sheet
 
 
@@ -57,6 +57,20 @@ def _render_body(state, account: str, position_id: str, underlying: str, view: s
     if view == "tearsheet":
         return render_signal_sheet(account, underlying, state)
     return render_alerts(account, position_id, state)
+
+
+def _dd_grid_rows(state, dd_account, pos_view, expanded):
+    """Rebuild the deep-dive Holdings grid's rowData for the picker's account + active
+    view, so a mute/restore is reflected there without a reload. Returns no_update when
+    no account is in scope (the output is then ignored — the grid may not be mounted)."""
+    acc_state = state.accounts.get(dd_account) if (state and dd_account) else None
+    if acc_state is None:
+        return no_update
+    if pos_view == "structure":
+        from pm.ui.deepdive.structures_panel import build_structure_rows
+        return build_structure_rows(acc_state, state, expanded)
+    from pm.ui.deepdive.positions import build_positions_rows
+    return build_positions_rows(acc_state, state)
 
 
 def _visible_rows_for_source(source, blotter_rows, dd_pos_rows):
@@ -327,6 +341,78 @@ def register_callbacks(app: dash.Dash) -> None:
         Output("esc-listener-dummy", "data"),
         Input("drawer-root", "id"),
     )
+
+    # ---- Alert suppress / snooze / restore (item 9) -----------------------
+    # The Mute / Snooze controls (per active alert) and the Muted-footer Restore
+    # all write through the shared accessor (state_access.suppress_alert /
+    # restore_alert → the store; re-marks the account in place, no recompute), then
+    # re-render the modal body (active alerts vs the Muted footer), refresh the
+    # blotter row store, and rebuild the active deep-dive grid — so the change shows
+    # on both tabs immediately. Pattern-matching ids carry (account, pid, pat); the
+    # name keyed on is the fire's underlying.
+    @app.callback(
+        Output("drawer-body", "children", allow_duplicate=True),
+        Output("blotter-all-rows", "data", allow_duplicate=True),
+        Output("deepdive-positions-grid", "rowData", allow_duplicate=True),
+        Input({"type": "sup-mute", "account": ALL, "pid": ALL, "pat": ALL}, "n_clicks"),
+        Input({"type": "sup-restore", "account": ALL, "pid": ALL, "pat": ALL}, "n_clicks"),
+        Input({"type": "sup-snooze", "account": ALL, "pid": ALL, "pat": ALL}, "value"),
+        Input({"type": "sup-date", "account": ALL, "pid": ALL, "pat": ALL}, "date"),
+        State("drawer-state", "data"),
+        State("deepdive-account-picker", "value"),
+        State("pos-view-mode", "data"),
+        State("struct-expanded", "data"),
+        prevent_initial_call=True,
+    )
+    def _on_suppress_action(_m, _r, _snz, _dt, drawer_state, dd_account, pos_view, expanded):
+        trig = ctx.triggered_id
+        state = sa.get_state()
+        if not isinstance(trig, dict) or state is None:
+            return no_update, no_update, no_update
+        # Ignore spurious fires when controls (re)mount with n_clicks 0/None, an
+        # empty dropdown, or a cleared date.
+        trigval = (ctx.triggered[0] if ctx.triggered else {}).get("value")
+        if trigval in (None, 0, ""):
+            return no_update, no_update, no_update
+        ttype, account = trig.get("type"), trig.get("account")
+        pid, pat = trig.get("pid"), trig.get("pat")
+        # The fire (active OR muted — both stay in acc.fires) gives the underlying to
+        # key on and the trace/rationale to capture.
+        fire = sa.fire_by_id(state, account, pid, pat)
+        if fire is None:
+            return no_update, no_update, no_update
+        name = fire.underlying
+
+        if ttype == "sup-mute":
+            sa.suppress_alert(account, name, pat, trace=fire.trace, rationale=fire.rationale)
+        elif ttype == "sup-restore":
+            sa.restore_alert(account, name, pat)
+        elif ttype == "sup-snooze":
+            if trigval == "pick":               # reveal handled by _reveal_snooze_date
+                return no_update, no_update, no_update
+            sa.suppress_alert(account, name, pat, suppressed_until=_snooze_until(int(trigval)),
+                              trace=fire.trace, rationale=fire.rationale)
+        elif ttype == "sup-date":
+            sa.suppress_alert(account, name, pat, suppressed_until=trigval,
+                              trace=fire.trace, rationale=fire.rationale)
+        else:
+            return no_update, no_update, no_update
+
+        ds = drawer_state or {}
+        body = render_alerts(ds.get("account", account), ds.get("position_id", pid), state)
+        blotter_rows = consolidate_fires_to_rows(sa.all_fires(state), state)
+        dd_rows = _dd_grid_rows(state, dd_account, pos_view, expanded)
+        return body, blotter_rows, dd_rows
+
+    # Reveal the inline date picker when its sibling Snooze dropdown selects
+    # "Pick a date…" (MATCH pairs each picker to its own dropdown).
+    @app.callback(
+        Output({"type": "sup-date", "account": MATCH, "pid": MATCH, "pat": MATCH}, "style"),
+        Input({"type": "sup-snooze", "account": MATCH, "pid": MATCH, "pat": MATCH}, "value"),
+        prevent_initial_call=True,
+    )
+    def _reveal_snooze_date(value):
+        return {"display": "inline-block"} if value == "pick" else {"display": "none"}
 
     # ---- Initial load OR Refresh BBG → load state + status + rows + Tab 2 --
     # One callback backs both the one-shot post-render load and the manual

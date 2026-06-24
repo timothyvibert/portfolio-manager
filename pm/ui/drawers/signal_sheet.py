@@ -16,6 +16,7 @@ from dash import html
 from pm.core.composite_score import COMPOSITE_WEIGHTS
 from pm.store.portfolio_state import PortfolioState
 from pm.insight.signal_library import SignalValue
+from pm.store.suppression_store import is_active
 from pm.ui import state_access as sa
 from pm.ui.drawers.trace_table import render_trace
 
@@ -229,7 +230,9 @@ def _composite_section(sigdict: dict) -> html.Details:
 # ---------------------------------------------------------------------------
 
 def _open_fires_section(account: str, underlying: str, state: PortfolioState) -> html.Div:
-    fires = sa.fires_for_underlying(state, account, underlying)
+    # Active alerts only (item 9): a muted alert is not an "open fire" — it lives in
+    # the Alert view's Muted footer, where it can be restored.
+    fires = [f for f in sa.fires_for_underlying(state, account, underlying) if is_active(f)]
     fires = sorted(fires, key=lambda f: f.tier)
     if not fires:
         body = [html.Div("No open fires on this name.", className="trace-muted")]

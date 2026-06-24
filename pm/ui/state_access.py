@@ -166,6 +166,52 @@ def resolve_structure(
 
 
 # ---------------------------------------------------------------------------
+# Alert suppression write path (item 9) — the single shared accessor/restore.
+# Both the modal's Muted footer (Part B) and the Alert Manager (Part C) call these;
+# there is no second mechanism. Like resolve_structure, each is a transactional
+# update in the single state owner: it writes the persisted suppression, then
+# re-marks the affected account's fires in place (no reload, no recompute) so every
+# surface reflects the change immediately.
+# ---------------------------------------------------------------------------
+
+def suppress_alert(account: str, name: str, pattern_id: str, *,
+                   suppressed_until: Optional[str] = None,
+                   trace: Optional[dict] = None,
+                   rationale: Optional[str] = None) -> bool:
+    """Suppress (``suppressed_until=None``) or snooze the alert ``(account, name,
+    pattern_id)``; ``trace``/``rationale`` capture the acting fire's baseline (store
+    only). Re-marks the account so the muted fire drops from the active surfaces at
+    once. Returns True on success."""
+    from pm.store import suppression_store
+    suppression_store.suppress(account, name, pattern_id,
+                               suppressed_until=suppressed_until,
+                               trace=trace, rationale=rationale)
+    state = _RUNTIME.get("state")
+    if state is None:
+        return False
+    acc = state.accounts.get(account)
+    if acc is None:
+        return False
+    suppression_store.remark_account(acc)
+    return True
+
+
+def restore_alert(account: str, name: str, pattern_id: str) -> bool:
+    """Remove the suppression and re-mark the account so the alert returns to the
+    active surfaces without a reload. Returns True on success."""
+    from pm.store import suppression_store
+    suppression_store.restore(account, name, pattern_id)
+    state = _RUNTIME.get("state")
+    if state is None:
+        return False
+    acc = state.accounts.get(account)
+    if acc is None:
+        return False
+    suppression_store.remark_account(acc)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Fire / signal / position lookups
 # ---------------------------------------------------------------------------
 
