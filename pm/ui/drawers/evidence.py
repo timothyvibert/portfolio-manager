@@ -15,6 +15,7 @@ from dash import dcc, html
 
 from pm.insight.patterns import Fire
 from pm.store.portfolio_state import PortfolioState
+from pm.store.suppression_store import is_active
 from pm.ui import state_access as sa
 from pm.ui.blotter.grid import format_position_descriptor
 from pm.ui.drawers.trace_table import render_trace
@@ -133,8 +134,10 @@ def render_alerts(account: str, position_id: str, state: PortfolioState) -> html
         if f.pattern_id not in seen:
             seen.add(f.pattern_id)
             distinct.append(f)
-    active = [f for f in distinct if f.suppression is None]
-    muted = [f for f in distinct if f.suppression is not None]
+    # Split via the shared predicate so a re-surfaced fire (muted but materially moved)
+    # shows as ACTIVE here, not in the Muted footer — consistent with every other surface.
+    active = [f for f in distinct if is_active(f)]
+    muted = [f for f in distinct if not is_active(f)]
     position = sa.position_by_id(state, account, position_id)
     descriptor = (format_position_descriptor(position)
                   if position is not None else position_id)

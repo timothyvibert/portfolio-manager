@@ -26,9 +26,18 @@ Alert Manager's "days active" staleness cue.
 from __future__ import annotations
 
 import json
+import math
 from datetime import date, datetime, timezone
 from typing import Optional
 
+from pm.insight.headline_metrics import (
+    EVENT_RECURRENCE,
+    HEADLINE_METRICS,
+    HIGHER_FIRES,
+    LOWER_FIRES,
+    PROXY_ONLY,
+    SIGNED,
+)
 from pm.insight.patterns import SuppressionMark
 from pm.store import db
 
@@ -169,14 +178,188 @@ def apply_suppressions(state, as_of: Optional[date] = None) -> None:
 
 
 def remark_account(account_state, as_of: Optional[date] = None) -> None:
-    """Re-mark one account's fires — used by ``state_access.resolve_structure`` after it
-    re-derives a structure's fires, so a just-confirmed fire matching an active
-    suppression is muted without a reload. Same marking logic as the load path."""
-    _mark_fires(account_state.account, account_state.fires, active_suppressions(as_of))
+    """Re-mark one account's fires — used by ``state_access`` after a structure
+    confirm/reject re-derive and the suppress/restore write paths. Applies the active
+    suppressions then the material-change re-surfacing, so a re-derived account stays
+    consistent with the load path (no reload, no recompute)."""
+    active = active_suppressions(as_of)
+    _mark_fires(account_state.account, account_state.fires, active)
+    _remark_material(account_state, active)
 
 
 def is_active(fire) -> bool:
-    """The shared predicate: a fire is an active alert iff it carries no suppression
-    mark. Every surface that hides muted alerts (blotter consolidation, deep-dive rows)
-    uses this so they can never diverge from one another."""
-    return fire.suppression is None
+    """The shared predicate: a fire is an active alert iff it is unmuted (no mark) OR it
+    was muted but its condition has moved materially since (kind ``"resurfaced"``). Every
+    surface that hides muted alerts filters on this, so a re-surfaced alert returns to all
+    of them at once and a snooze-expiry (mark cleared) is never confused with it."""
+    s = fire.suppression
+    return s is None or s.kind == "resurfaced"
+
+
+# ---------------------------------------------------------------------------
+# Material-change re-surfacing (item 12) — flip a muted alert back to active when its
+# condition has moved materially since mute time. A read-path MARKING pass, exactly like
+# apply_suppressions: it reads the stored captured_trace baseline + the current fire's
+# already-computed trace and sets kind="resurfaced". It recomputes no fires, calls no
+# Bloomberg, and persists nothing — the state is derived fresh on every load (a condition
+# that moves material then back reverts to muted next load). It consumes the item-11
+# headline-metric map (which value, what type) + the item-9 captured baseline.
+# ---------------------------------------------------------------------------
+_MATERIAL_REL_MARGIN = 0.25    # re-surface on a >=25% worse move vs the captured baseline
+_MATERIAL_ABS_FLOOR = 1e-9     # degenerate-baseline guard (real fires sit well away from 0)
+
+_MISSING = object()
+
+
+def _dig(trace, key: tuple):
+    """Walk a trace dict by a key tuple (a headline-map trace_key); ``_MISSING`` if any
+    step is absent. Works on both a live ``fire.trace`` and ``json.loads(captured_trace)``."""
+    cur = trace
+    for k in key:
+        if not isinstance(cur, dict) or k not in cur:
+            return _MISSING
+        cur = cur[k]
+    return cur
+
+
+def _to_float(v) -> Optional[float]:
+    """A finite float, or None for missing / non-numeric / NaN / inf (bool excluded)."""
+    if v is _MISSING or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if (math.isnan(f) or math.isinf(f)) else f
+
+
+def _to_date(v) -> Optional[date]:
+    """Normalize an event date to a ``date`` from either side of the json round-trip: a
+    live ``date`` / ``datetime`` / ``pd.Timestamp`` (a datetime subclass), or the
+    ``default=str``-stringified form captured at suppress time."""
+    if v is None or v is _MISSING:
+        return None
+    if isinstance(v, datetime):        # also catches pd.Timestamp (a datetime subclass)
+        return v.date()
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _metric_label(hm) -> str:
+    """A short, stable label for the headline metric (the leaf of its key) — e.g.
+    ``"nav_pct"`` or ``"ubs_note_date"``; the surfaces prettify it."""
+    key = (hm.event_id_key if hm.metric_type == EVENT_RECURRENCE and hm.event_id_key
+           else hm.primary.trace_key)
+    return key[-1]
+
+
+def _material_numeric(captured: Optional[float], current: Optional[float], direction: str) -> bool:
+    """True when ``current`` has moved at least the relative margin further than
+    ``captured`` in the firing direction. SIGNED (P3) takes the firing sign from the
+    captured value (a put fired on a negative break, a call on a positive one)."""
+    if captured is None or current is None:
+        return False
+    if abs(captured) < _MATERIAL_ABS_FLOOR:    # can't size a relative move off ~0
+        return False
+    need = abs(captured) * _MATERIAL_REL_MARGIN
+    move = current - captured
+    if direction == HIGHER_FIRES:
+        return move >= need
+    if direction == LOWER_FIRES:
+        return -move >= need
+    if direction == SIGNED:
+        return (-move >= need) if captured < 0 else (move >= need)
+    return False
+
+
+def _more_extreme(a: float, b: float, direction: str, captured: float) -> bool:
+    """Is ``a`` further in the firing direction than ``b``? (picks the worst current
+    instance when a pattern fires per position — the multiplicity rule)."""
+    if direction == HIGHER_FIRES:
+        return a > b
+    if direction == LOWER_FIRES:
+        return a < b
+    if direction == SIGNED:
+        return (a < b) if captured < 0 else (a > b)
+    return False
+
+
+def _resurfaces(record: dict, fires) -> Optional[SuppressionMark]:
+    """A ``resurfaced`` mark (with the headline delta) if this suppression's condition
+    moved materially vs its captured baseline, else None. ``fires`` are the currently-marked
+    fires under the ``(account, name, pattern_id)`` key. Excludes P8 (proxy headline) and
+    P16-P20 (no map entry); guards a missing/garbled baseline or headline (no re-surface)."""
+    hm = HEADLINE_METRICS.get(record["pattern_id"])
+    if hm is None or hm.metric_type == PROXY_ONLY:
+        return None
+    raw = record.get("captured_trace")
+    if not raw:
+        return None
+    try:
+        captured = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if hm.metric_type == EVENT_RECURRENCE:
+        cap_d = _to_date(_dig(captured, hm.event_id_key)) if hm.event_id_key else None
+        if cap_d is None:
+            return None
+        best_d = None                          # the newest current event date
+        for f in fires:
+            d = _to_date(_dig(getattr(f, "trace", {}) or {}, hm.event_id_key))
+            if d is not None and (best_d is None or d > best_d):
+                best_d = d
+        if best_d is None or not (best_d > cap_d):
+            return None
+        return SuppressionMark(kind="resurfaced", metric=_metric_label(hm),
+                               captured_value=cap_d.isoformat(), current_value=best_d.isoformat())
+
+    # numeric: monotonic, or the multi_axis primary axis
+    axis = hm.primary
+    cap_v = _to_float(_dig(captured, axis.trace_key))
+    if cap_v is None:
+        return None
+    best_v = None                              # the most-extreme current value
+    for f in fires:
+        cv = _to_float(_dig(getattr(f, "trace", {}) or {}, axis.trace_key))
+        if cv is None:
+            continue
+        if best_v is None or _more_extreme(cv, best_v, axis.direction, cap_v):
+            best_v = cv
+    if best_v is None or not _material_numeric(cap_v, best_v, axis.direction):
+        return None
+    return SuppressionMark(kind="resurfaced", metric=_metric_label(hm),
+                           captured_value=cap_v, current_value=best_v)
+
+
+def _remark_material(account_state, active: dict) -> None:
+    """Flip this account's materially-moved suppressions to ``resurfaced`` (active again),
+    over the fires ``_mark_fires`` just marked — so it considers permanent suppressions AND
+    unexpired snoozes (a material move overrides an active snooze)."""
+    acc = account_state.account
+    by_key: dict = {}
+    for f in account_state.fires:
+        if f.suppression is None:              # unmuted / expired-snooze: nothing to re-surface
+            continue
+        by_key.setdefault((f.underlying, f.pattern_id), []).append(f)
+    for (name, pid), fires in by_key.items():
+        record = active.get((acc, name, pid))
+        if record is None:
+            continue
+        mark = _resurfaces(record, fires)
+        if mark is not None:
+            for f in fires:
+                f.suppression = mark
+
+
+def apply_material_change(state, as_of: Optional[date] = None) -> None:
+    """Re-surface materially-moved suppressions across all accounts. Called in
+    ``load_portfolio_state`` immediately after ``apply_suppressions`` — a read-path mark,
+    no recompute, no Bloomberg, no persistence."""
+    active = active_suppressions(as_of)
+    for account_state in state.accounts.values():
+        _remark_material(account_state, active)

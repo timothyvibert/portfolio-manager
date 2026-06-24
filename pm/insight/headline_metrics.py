@@ -69,6 +69,12 @@ class HeadlineMetric:
     primary: Axis                       # the single headline axis
     secondary: tuple = ()               # additional axes: gates, sub-cases, event econ
     note: str = ""
+    # For event_recurrence patterns only: a trace-key path to the EVENT DATE (which cycle),
+    # since the primary/secondary axes point at countdown numbers, not event identity. The
+    # material-change comparison re-surfaces when the current event date is newer than the
+    # captured one. Lives in template_variables (raw values), so it round-trips through the
+    # default=str-serialized captured_trace as an ISO/date string. None for non-event types.
+    event_id_key: Optional[tuple] = None
 
 
 # pattern_id -> HeadlineMetric. Grounded in each detector's actual fire_result / trace
@@ -106,6 +112,7 @@ HEADLINE_METRICS: dict[str, HeadlineMetric] = {
                  "recent UBS note — the defining catalyst (re-surface on a new note)"),
         ),
         note="The trigger is a fresh UBS note (an event), not a drifting number.",
+        event_id_key=("template_variables", "ubs_note_date"),
     ),
     "P5": HeadlineMetric(
         "P5", MULTI_AXIS,
@@ -136,6 +143,7 @@ HEADLINE_METRICS: dict[str, HeadlineMetric] = {
                  "ex-div window"),
         ),
         note="Event-windowed: assignment economics around the ex-dividend date, not a metric drifting.",
+        event_id_key=("template_variables", "ex_div_date"),
     ),
     "P8": HeadlineMetric(
         "P8", PROXY_ONLY,
@@ -190,6 +198,7 @@ HEADLINE_METRICS: dict[str, HeadlineMetric] = {
             Axis(("result", "term"), "p14_term_structure_min", HIGHER_FIRES, "term-structure gate (OR)"),
         ),
         note="Earnings date is the defining event; the vol condition is an OR of two gates.",
+        event_id_key=("template_variables", "earnings_date"),
     ),
     "P15": HeadlineMetric(
         "P15", MONOTONIC_NUMERIC,

@@ -232,6 +232,13 @@ def load_portfolio_state(
     from pm.store.suppression_store import apply_suppressions
     apply_suppressions(state)
 
+    # Material-change re-surfacing (item 12): over the just-marked fires, flip a muted
+    # alert back to active when its condition has moved materially since mute time —
+    # comparing the suppression's captured baseline against the current fire's
+    # already-computed trace. Read-path mark only: no recompute, no Bloomberg.
+    from pm.store.suppression_store import apply_material_change
+    apply_material_change(state)
+
     return state
 
 

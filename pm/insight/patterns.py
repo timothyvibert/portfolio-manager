@@ -37,16 +37,28 @@ from pm.insight.signal_library import SignalDict, SignalValue
 
 @dataclass
 class SuppressionMark:
-    """Marks a Fire as muted by a persisted alert suppression (item 9).
+    """Marks a Fire's suppression state (item 9; the ``resurfaced`` state is item 12).
 
-    Attached by ``suppression_store.apply_suppressions`` in the load path *after*
-    the engine has produced the fire — the fire is never removed from
-    ``acc.fires``, so a restore (or snooze expiry) plus a re-apply brings it
-    straight back (the no-recompute contract). ``None`` on ``Fire.suppression``
-    means the alert is active.
+    Attached by ``suppression_store`` in the load path *after* the engine has produced
+    the fire — the fire is never removed from ``acc.fires``, so a restore (or snooze
+    expiry) plus a re-apply brings it straight back (the no-recompute contract).
+
+    Three kinds, distinguishing all four states (``is_active`` treats the first as inactive
+    and the last as active, so re-surfaced never looks like a plain snooze-expiry):
+      - ``"suppressed"`` / ``"snoozed"`` — muted (``is_active`` False).
+      - ``None`` on ``Fire.suppression`` — active (never muted, or snooze expired).
+      - ``"resurfaced"`` — muted, but the condition moved materially since mute time, so
+        it is **active again** (``is_active`` True) and carries the before→after delta so
+        the surfaces can say *why* it came back. Set by the material-change pass.
     """
-    kind: str                      # "suppressed" (permanent) | "snoozed" (dated)
-    until: Optional[str] = None    # 'YYYY-MM-DD' when snoozed; None when permanent
+    kind: str                      # "suppressed" (permanent) | "snoozed" (dated) | "resurfaced"
+    until: Optional[str] = None    # 'YYYY-MM-DD' when snoozed; None otherwise
+    # Set only when kind == "resurfaced" (material-change re-surfacing). The headline
+    # metric and its baseline→current values, so the blotter / Alert Manager can show the
+    # move. captured/current are numbers (numeric metrics) or ISO date strings (event metrics).
+    metric: Optional[str] = None
+    captured_value: Optional[Any] = None
+    current_value: Optional[Any] = None
 
 
 @dataclass
