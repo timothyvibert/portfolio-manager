@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from pm.pricing.american_bs2002 import bs2002_price
-from pm.pricing.conventions import year_frac
+from pm.pricing.conventions import norm_cdf, year_frac
 from pm.pricing.european import bs_price
 
 
@@ -166,35 +166,60 @@ def strategy_breakevens(spot_grid, expiry_curve):
 
 
 def pop_lognormal(spot, sigma, T, r, q, spot_grid, expiry_curve):
-    """Probability of profit at expiry under lognormal risk-neutral dynamics,
+    """Probability of profit at expiry under lognormal risk-neutral dynamics.
 
-        PoP = integral phi(S_T) * 1{payoff(S_T) > 0} dS_T,
+    Closed-form over the profit region(s): the intervals where the NET P&L curve is
+    positive, delimited by its zero-crossings (breakevens). Under lognormal S_T
+    (ln S_T ~ N(ln(spot) + (r - q - sigma^2/2) T, sigma sqrt(T))), each profit interval
+    [a, b] contributes Phi(d(b)) - Phi(d(a)), with d(x) = (ln(x/spot) - drift) /
+    (sigma sqrt(T)); an unbounded tail uses Phi(0)=0 at S->0 and Phi(inf)=1 at S->inf.
+    The spot grid is used ONLY to locate the profit intervals (sign + linear crossing),
+    NOT for the probability mass -- so no tail is truncated and nothing is renormalized.
+    Returns a float in [0, 1], or NaN if T <= 0 / sigma <= 0 / spot <= 0.
 
-    with ln(S_T) ~ N(ln(spot) + (r - q - sigma^2/2) T, sigma sqrt(T)). Trapezoidal
-    integration over the supplied spot grid, renormalized to grid mass. Returns a
-    float in [0, 1], or NaN if T <= 0 / sigma <= 0 / spot <= 0. Industry-standard
-    (OVME convention); understates tail risk for skewed strategies.
+    Assumes the P&L is monotonic in spot beyond the grid edges (true for standard option
+    structures), so a profit run touching the left / right grid edge extends to 0 / +inf.
     """
-    spot_grid = np.asarray(spot_grid, dtype=np.float64)
+    grid = np.asarray(spot_grid, dtype=np.float64)
     curve = np.asarray(expiry_curve, dtype=np.float64)
-    if spot_grid.size != curve.size or spot_grid.size < 2:
+    if grid.size != curve.size or grid.size < 2:
         return float('nan')
     if not (T > 0) or not (sigma > 0) or not (spot > 0):
         return float('nan')
 
     sigma_sqT = sigma * np.sqrt(T)
     drift = (r - q - 0.5 * sigma * sigma) * T
-    log_ratio = np.log(spot_grid / spot) - drift
-    pdf = (1.0 / (spot_grid * sigma_sqT * np.sqrt(2.0 * np.pi))) \
-        * np.exp(-0.5 * (log_ratio / sigma_sqT) ** 2)
 
-    in_profit = (curve > 0).astype(np.float64)
-    integrand = pdf * in_profit
+    def _ln_cdf(x):
+        # Lognormal CDF P(S_T <= x): 0 at S->0, 1 at S->inf.
+        if x <= 0:
+            return 0.0
+        if not np.isfinite(x):
+            return 1.0
+        return float(norm_cdf((np.log(x / spot) - drift) / sigma_sqT))
 
-    pop = float(np.trapezoid(integrand, spot_grid))
-    pdf_total = float(np.trapezoid(pdf, spot_grid))
-    if pdf_total > 0:
-        pop = pop / pdf_total
+    def _cross(k):
+        # Linear zero-crossing of the curve between grid[k-1] and grid[k].
+        x0, x1 = grid[k - 1], grid[k]
+        y0, y1 = curve[k - 1], curve[k]
+        return float(x0 + (x1 - x0) * (0.0 - y0) / (y1 - y0))
+
+    profit = curve > 0
+    n = curve.size
+    pop = 0.0
+    i = 0
+    while i < n:
+        if not profit[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and profit[j]:
+            j += 1
+        # Profit run covers grid indices [i, j-1].
+        a = 0.0 if i == 0 else _cross(i)            # left boundary (0 -> reaches S=0)
+        b = float('inf') if j == n else _cross(j)   # right boundary (inf -> reaches S=inf)
+        pop += _ln_cdf(b) - _ln_cdf(a)
+        i = j
 
     return max(0.0, min(1.0, pop))
 
@@ -202,12 +227,16 @@ def pop_lognormal(spot, sigma, T, r, q, spot_grid, expiry_curve):
 def strategy_max_profit_loss(spot_grid, expiry_curve, qty_legs):
     """Max profit + max loss at expiry from the NET P&L curve.
 
-    Requires expiry_curve to be NET P&L. Unbounded sides are detected from leg
-    structure via slope_high = stock_qty + 100 * net_call_qty (each contract = 100
-    shares): slope_high > 0 -> unbounded gain, < 0 -> unbounded loss. Low-spot
-    (S -> 0) is treated as bounded (long puts cap downside; naked shorts assumed
-    collateralized). Returns max_profit / max_loss (None if that side is unbounded),
-    their spots, and the unbounded_gain / unbounded_loss flags.
+    Requires expiry_curve to be NET P&L. The high-spot slope
+    slope_high = stock_qty + 100 * net_call_qty (each contract = 100 shares) flags an
+    UNBOUNDED side as S -> inf (> 0 gain, < 0 loss). The low-spot side (S -> 0) is always
+    bounded (S >= 0), but a net-short-put structure's max loss sits at S = 0 (put
+    assignment, stock to zero) -- off the typical +/-50% grid, so the grid minimum
+    understates it. When the low-spot slope slope_low = stock_qty - 100 * net_put_qty is
+    > 0 (P&L falls toward S = 0) AND the curve's left edge is in its linear
+    below-all-strikes tail, that tail is extended to S = 0 for the true max loss.
+    Returns max_profit / max_loss (None if that side is unbounded), their spots, and the
+    unbounded_gain / unbounded_loss flags.
     """
     curve = np.asarray(expiry_curve, dtype=np.float64)
     grid = np.asarray(spot_grid, dtype=np.float64)
@@ -222,21 +251,37 @@ def strategy_max_profit_loss(spot_grid, expiry_curve, qty_legs):
                     if l.get('opt_type') == 'Stock')
     net_call_qty = sum(int(l['qty']) for l in qty_legs
                        if l.get('opt_type') == 'Call')
+    net_put_qty = sum(int(l['qty']) for l in qty_legs
+                      if l.get('opt_type') == 'Put')
     slope_high = stock_qty + 100 * net_call_qty
+    slope_low = stock_qty - 100 * net_put_qty
 
     unbounded_gain = (slope_high > 0)
     unbounded_loss = (slope_high < 0)
 
     max_profit_idx = int(np.argmax(curve))
     max_loss_idx = int(np.argmin(curve))
+    max_loss_val = float(curve[max_loss_idx])
+    max_loss_spot = float(grid[max_loss_idx])
+
+    # Net-short-put left tail: the max loss sits at S = 0, below the grid. If the
+    # curve's left edge is in its linear below-all-strikes tail (local slope ==
+    # slope_low), extend it to S = 0 for the true max loss (= strike - premium, x100).
+    if slope_low > 0 and grid.size >= 2:
+        left_slope = (curve[1] - curve[0]) / (grid[1] - grid[0])
+        if abs(left_slope - slope_low) <= 0.01 * abs(slope_low) + 1e-6:
+            val_at_zero = float(curve[0] - slope_low * grid[0])
+            if val_at_zero < max_loss_val:
+                max_loss_val = val_at_zero
+                max_loss_spot = 0.0
 
     return {
         'max_profit':         (None if unbounded_gain
                                else float(curve[max_profit_idx])),
         'max_loss':           (None if unbounded_loss
-                               else float(curve[max_loss_idx])),
+                               else max_loss_val),
         'max_profit_at_spot': float(grid[max_profit_idx]),
-        'max_loss_at_spot':   float(grid[max_loss_idx]),
+        'max_loss_at_spot':   max_loss_spot,
         'unbounded_gain':     unbounded_gain,
         'unbounded_loss':     unbounded_loss,
     }
