@@ -5,8 +5,9 @@ with q = 0 implicit; discrete cash dividends are absorbed into the root and the
 actual ex-div spot S_actual = S_risky + PV_remaining is recovered at every interior
 node so the early-exercise test sees the true ex-div spot. ``crr_price_continuous_q``
 is the same lattice with a continuous yield (calibration reference). Greeks are
-bump-and-revalue, with a discrete-div-safe theta (revalue one business day forward
-with a re-anchored dividend schedule, not a finite difference at adjacent nodes).
+bump-and-revalue, EXCEPT gamma, which is read directly off the lattice's step-2 nodes
+(smooth and convergent in n, avoiding the bump second-difference sawtooth); theta is
+discrete-div-safe (revalue one business day forward with a re-anchored div schedule).
 
 Day-count note (intentional, OVME-match): the option tenor T is busday/252 while
 PV(divs) discounts at calendar/365 — do not normalize.
@@ -20,8 +21,21 @@ DEFAULT_CRR_STEPS = 500   # accurate path
 FAST_CRR_STEPS = 200      # IV-solver inner-loop fast path
 
 
+def _tree_node_gamma(vals3, spots3):
+    """Gamma off the lattice's three step-2 nodes (ascending spot order): the second
+    difference of option value with respect to the node spot levels. Uses the tree's
+    own grid, so it is smooth and convergent in n -- unlike a bump-and-revalue second
+    difference, which carries the lattice sawtooth. (For CRR the middle step-2 node
+    sits at the current spot, so this is gamma evaluated at the money.)"""
+    S_dd, S_ud, S_uu = spots3
+    V_dd, V_ud, V_uu = vals3
+    delta_up = (V_uu - V_ud) / (S_uu - S_ud)
+    delta_dn = (V_ud - V_dd) / (S_ud - S_dd)
+    return float((delta_up - delta_dn) / ((S_uu - S_dd) / 2.0))
+
+
 def crr_price(S_full, K, T, r, sigma, divs_df, opt_type,
-              n_steps=DEFAULT_CRR_STEPS, today=None):
+              n_steps=DEFAULT_CRR_STEPS, today=None, return_gamma_nodes=False):
     """CRR American option on a strip-spot tree with discrete cash dividends.
 
     ``S_full``: the un-stripped market spot. ``sigma``: vol of S_risky (the IV
@@ -31,8 +45,9 @@ def crr_price(S_full, K, T, r, sigma, divs_df, opt_type,
     if today is None:
         today = pd.Timestamp.today().normalize()
     if T <= 0:
-        return (max(S_full - K, 0) if opt_type == 'Call'
-                else max(K - S_full, 0))
+        intrinsic = (max(S_full - K, 0) if opt_type == 'Call'
+                     else max(K - S_full, 0))
+        return (intrinsic, None) if return_gamma_nodes else intrinsic
 
     # Risky spot at the root -- the tree grows from this (divs absorbed here).
     S_risky_0 = strip_spot(S_full, divs_df, r, today, T)
@@ -54,6 +69,7 @@ def crr_price(S_full, K, T, r, sigma, divs_df, opt_type,
         V = np.maximum(K - S_actual_terminal, 0)
 
     # Backward induction (vectorized over node index j; the loop is time only).
+    gamma_nodes = None
     for i in range(n_steps - 1, -1, -1):
         t_node = i * dt
         j_arr = np.arange(i + 1)
@@ -68,17 +84,19 @@ def crr_price(S_full, K, T, r, sigma, divs_df, opt_type,
         else:
             intrinsic = np.maximum(K - S_actual_node, 0)
         V = np.maximum(continuation, intrinsic)
+        if return_gamma_nodes and i == 2:
+            gamma_nodes = (V.copy(), S_actual_node.copy())
 
-    return V[0]
+    return (V[0], gamma_nodes) if return_gamma_nodes else V[0]
 
 
 def crr_price_continuous_q(S, K, T, r, q, sigma, opt_type,
-                           n_steps=DEFAULT_CRR_STEPS):
+                           n_steps=DEFAULT_CRR_STEPS, return_gamma_nodes=False):
     """CRR American tree with a continuous dividend yield q (no discrete divs, no
     strip). Calibration reference for the BS2002 path; not on any load path."""
     if T <= 0:
-        return (max(S - K, 0) if opt_type == 'Call'
-                else max(K - S, 0))
+        intrinsic = (max(S - K, 0) if opt_type == 'Call' else max(K - S, 0))
+        return (intrinsic, None) if return_gamma_nodes else intrinsic
     dt = T / n_steps
     u = np.exp(sigma * np.sqrt(dt))
     d = 1.0 / u
@@ -92,6 +110,7 @@ def crr_price_continuous_q(S, K, T, r, q, sigma, opt_type,
     else:
         V = np.maximum(K - S_terminal, 0)
 
+    gamma_nodes = None
     for i in range(n_steps - 1, -1, -1):
         j_arr = np.arange(i + 1)
         S_node = S * (u ** j_arr) * (d ** (i - j_arr))
@@ -101,8 +120,10 @@ def crr_price_continuous_q(S, K, T, r, q, sigma, opt_type,
         else:
             intrinsic = np.maximum(K - S_node, 0)
         V = np.maximum(continuation, intrinsic)
+        if return_gamma_nodes and i == 2:
+            gamma_nodes = (V.copy(), S_node.copy())
 
-    return V[0]
+    return (V[0], gamma_nodes) if return_gamma_nodes else V[0]
 
 
 def crr_greeks(S_full, K, T, r, sigma, divs_df, opt_type,
@@ -118,12 +139,15 @@ def crr_greeks(S_full, K, T, r, sigma, divs_df, opt_type,
     if today is None:
         today = pd.Timestamp.today().normalize()
 
-    p_base = crr_price(S_full, K, T, r, sigma, divs_df, opt_type, n_steps, today)
+    p_base, gamma_nodes = crr_price(S_full, K, T, r, sigma, divs_df, opt_type,
+                                    n_steps, today, return_gamma_nodes=True)
 
     p_up = crr_price(S_full * 1.01, K, T, r, sigma, divs_df, opt_type, n_steps, today)
     p_dn = crr_price(S_full * 0.99, K, T, r, sigma, divs_df, opt_type, n_steps, today)
     delta = (p_up - p_dn) / (S_full * 0.02)
-    gamma = (p_up - 2 * p_base + p_dn) / (S_full * 0.01) ** 2
+    # Gamma off the lattice nodes (smooth/convergent); the spot bump still gives delta.
+    gamma = (_tree_node_gamma(*gamma_nodes) if gamma_nodes is not None
+             else (p_up - 2 * p_base + p_dn) / (S_full * 0.01) ** 2)
 
     p_v_up = crr_price(S_full, K, T, r, sigma + 0.01, divs_df, opt_type, n_steps, today)
     p_v_dn = crr_price(S_full, K, T, r, sigma - 0.01, divs_df, opt_type, n_steps, today)
@@ -172,12 +196,15 @@ def crr_greeks_continuous_q(S, K, T, r, q, sigma, opt_type,
     interface symmetry but does not affect a continuous-q price (there is no dividend
     schedule to re-anchor). Returns {price, delta, gamma, vega, theta, rho, div_rho}.
     """
-    p_base = crr_price_continuous_q(S, K, T, r, q, sigma, opt_type, n_steps)
+    p_base, gamma_nodes = crr_price_continuous_q(S, K, T, r, q, sigma, opt_type,
+                                                 n_steps, return_gamma_nodes=True)
 
     p_up = crr_price_continuous_q(S * 1.01, K, T, r, q, sigma, opt_type, n_steps)
     p_dn = crr_price_continuous_q(S * 0.99, K, T, r, q, sigma, opt_type, n_steps)
     delta = (p_up - p_dn) / (S * 0.02)
-    gamma = (p_up - 2 * p_base + p_dn) / (S * 0.01) ** 2
+    # Gamma off the lattice nodes (smooth/convergent); the spot bump still gives delta.
+    gamma = (_tree_node_gamma(*gamma_nodes) if gamma_nodes is not None
+             else (p_up - 2 * p_base + p_dn) / (S * 0.01) ** 2)
 
     p_v_up = crr_price_continuous_q(S, K, T, r, q, sigma + 0.01, opt_type, n_steps)
     p_v_dn = crr_price_continuous_q(S, K, T, r, q, sigma - 0.01, opt_type, n_steps)
