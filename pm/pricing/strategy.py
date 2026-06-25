@@ -4,11 +4,12 @@ Contains no numerical kernel of its own: it routes each leg to the right engine
 via a ``(style, mode)`` registry and aggregates by signed quantity (price = sum of
 qty * leg_price; greeks = qty-weighted sum of per-leg greek dicts).
 
-Registry (Phase 1 default American mode = 'fast' = BS2002, so behaviour matches the
-prior monolith; a later increment flips the American default to 'truth' = CRR):
-    ('European', *)        -> european      (q absorbed via S_eff)
-    ('American', 'fast')   -> american_bs2002
-    ('American', 'truth')  -> american_crr
+The default American mode is 'truth' = CRR (the convergent, true-American mark). BS2002
+is retained under 'fast' as a fast closed-form cross-check / standing regression canary;
+a future PDE engine registers under ('American', 'pde') with no caller change:
+    ('European', *)        -> european         (q absorbed via S_eff)
+    ('American', 'truth')  -> american_crr      (default)
+    ('American', 'fast')   -> american_bs2002   (cross-check)
 """
 import math
 
@@ -26,7 +27,7 @@ REGISTRY = {
 
 
 def price_leg(S, K, T, r, q, sigma, opt_type,
-              style='American', mode='fast', divs=None,
+              style='American', mode='truth', divs=None,
               n_steps=DEFAULT_CRR_STEPS):
     """Price a single option leg, routing to the engine selected by (style, mode).
 
@@ -45,7 +46,7 @@ def price_leg(S, K, T, r, q, sigma, opt_type,
     return engine.price(S, K, T, r, q, sigma, opt_type, divs=divs, n_steps=n_steps)
 
 
-def price_strategy(S, legs, r, q, mode='fast', divs=None,
+def price_strategy(S, legs, r, q, mode='truth', divs=None,
                    n_steps=DEFAULT_CRR_STEPS):
     """Aggregate price across legs, signed by quantity.
 
@@ -84,14 +85,13 @@ def price_strategy(S, legs, r, q, mode='fast', divs=None,
 
 
 def strategy_greeks(S, legs, r, q, today=None,
-                    mode='fast', divs=None, n_steps=DEFAULT_CRR_STEPS):
+                    mode='truth', divs=None, n_steps=DEFAULT_CRR_STEPS):
     """Aggregate greeks across legs (qty-weighted sum). Scalar S only.
 
     European legs use analytic BS greeks on S_eff (rho is real; div_rho padded to
-    0). American legs use BS2002 (fast) or CRR (truth with discrete divs); the
-    no-dividend American truth case falls back to BS2002 greeks until the CRR
-    continuous-q greeks helper lands. Returns the aggregated greek dict plus
-    'leg_greeks' (per-leg dicts).
+    0). American legs use CRR (the 'truth' default -- discrete divs via crr_greeks,
+    else the continuous-q lattice via crr_greeks_continuous_q) or BS2002 (the 'fast'
+    cross-check). Returns the aggregated greek dict plus 'leg_greeks' (per-leg dicts).
     """
     if not np.isscalar(S):
         raise ValueError("strategy_greeks requires scalar S; "
@@ -124,14 +124,13 @@ def strategy_greeks(S, legs, r, q, today=None,
             g.setdefault('div_rho', 0.0)
         elif mode == 'fast':
             g = american_bs2002.bs2002_greeks(S, K, T, r, q, sigma, opt_type, today=today)
-        else:  # mode == 'truth' American
+        else:  # mode == 'truth' American (the default)
             if divs is not None and len(divs) > 0:
                 g = american_crr.crr_greeks(S, K, T, r, sigma, divs, opt_type,
                                             n_steps=n_steps, today=today)
             else:
-                # No dedicated CRR continuous-q greeks helper yet; BS2002 greeks
-                # match within tolerance and are the documented fallback.
-                g = american_bs2002.bs2002_greeks(S, K, T, r, q, sigma, opt_type, today=today)
+                g = american_crr.crr_greeks_continuous_q(S, K, T, r, q, sigma, opt_type,
+                                                         n_steps=n_steps, today=today)
 
         leg_greeks_list.append(g)
         for key in aggregate:

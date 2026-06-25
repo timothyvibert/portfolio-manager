@@ -161,6 +161,54 @@ def crr_greeks(S_full, K, T, r, sigma, divs_df, opt_type,
     }
 
 
+def crr_greeks_continuous_q(S, K, T, r, q, sigma, opt_type,
+                            n_steps=DEFAULT_CRR_STEPS, today=None):
+    """CRR price + greeks on the continuous-q lattice, bump-and-revalue throughout.
+
+    The continuous-q counterpart of crr_greeks, with the same conventions: vega per
+    1 vol point; theta per business day (one-business-day T - 1/252 reprice); rho per
+    1 bp (central, /2 -- not /10000); div_rho the sensitivity to the continuous yield
+    q via a central +/- 1 bp bump (mirrors the rho bump). today is accepted for
+    interface symmetry but does not affect a continuous-q price (there is no dividend
+    schedule to re-anchor). Returns {price, delta, gamma, vega, theta, rho, div_rho}.
+    """
+    p_base = crr_price_continuous_q(S, K, T, r, q, sigma, opt_type, n_steps)
+
+    p_up = crr_price_continuous_q(S * 1.01, K, T, r, q, sigma, opt_type, n_steps)
+    p_dn = crr_price_continuous_q(S * 0.99, K, T, r, q, sigma, opt_type, n_steps)
+    delta = (p_up - p_dn) / (S * 0.02)
+    gamma = (p_up - 2 * p_base + p_dn) / (S * 0.01) ** 2
+
+    p_v_up = crr_price_continuous_q(S, K, T, r, q, sigma + 0.01, opt_type, n_steps)
+    p_v_dn = crr_price_continuous_q(S, K, T, r, q, sigma - 0.01, opt_type, n_steps)
+    vega = (p_v_up - p_v_dn) / 2.0  # per 1 vol point
+
+    p_r_up = crr_price_continuous_q(S, K, T, r + 0.0001, q, sigma, opt_type, n_steps)
+    p_r_dn = crr_price_continuous_q(S, K, T, r - 0.0001, q, sigma, opt_type, n_steps)
+    rho = (p_r_up - p_r_dn) / 2.0  # per 1 bp
+
+    # Theta -- revalue one business day forward (per business day). No dividend
+    # schedule on the continuous-q path, so no calendar re-anchor is needed.
+    T_next = T - 1.0 / 252.0
+    if T_next > 0:
+        p_next = crr_price_continuous_q(S, K, T_next, r, q, sigma, opt_type, n_steps)
+        theta_per_day = p_next - p_base
+    else:
+        theta_per_day = (max(S - K, 0) - p_base if opt_type == 'Call'
+                         else max(K - S, 0) - p_base)
+
+    # div_rho -- sensitivity to the continuous yield q, central +/- 1 bp bump.
+    p_q_up = crr_price_continuous_q(S, K, T, r, q + 0.0001, sigma, opt_type, n_steps)
+    p_q_dn = crr_price_continuous_q(S, K, T, r, q - 0.0001, sigma, opt_type, n_steps)
+    div_rho = (p_q_up - p_q_dn) / 2.0
+
+    return {
+        'price': p_base, 'delta': delta, 'gamma': gamma,
+        'vega': vega, 'theta': theta_per_day, 'rho': rho,
+        'div_rho': div_rho,
+    }
+
+
 # --- common interface ---
 
 def price(S, K, T, r, q, sigma, opt_type, *, divs=None, n_steps=DEFAULT_CRR_STEPS):
@@ -184,11 +232,8 @@ def price(S, K, T, r, q, sigma, opt_type, *, divs=None, n_steps=DEFAULT_CRR_STEP
 
 
 def greeks(S, K, T, r, q, sigma, opt_type, *, divs=None, today=None, n_steps=DEFAULT_CRR_STEPS):
-    """American CRR greeks. Discrete-dividend greeks are available now; the
-    continuous-q (no-dividend) CRR greeks helper lands in a later increment, so the
-    strategy layer falls back to BS2002 greeks for that case today."""
+    """American CRR greeks: discrete-dividend (crr_greeks) when a div schedule is
+    given, else the continuous-q lattice (crr_greeks_continuous_q)."""
     if divs is not None and len(divs) > 0:
         return crr_greeks(S, K, T, r, sigma, divs, opt_type, n_steps=n_steps, today=today)
-    raise NotImplementedError(
-        "CRR continuous-q greeks are not yet implemented; the strategy layer uses "
-        "BS2002 greeks for the no-dividend American case.")
+    return crr_greeks_continuous_q(S, K, T, r, q, sigma, opt_type, n_steps=n_steps, today=today)
