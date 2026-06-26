@@ -52,6 +52,9 @@ OPTION_SNAPSHOT_FIELDS = [
     "GAMMA",
     "VEGA",
     "RHO",
+    # Exercise style ('American' / 'European') — drives the pricing-engine style
+    # key (pm.pricing registry). Read per leg; the scenario rung never defaults it.
+    "OPTION_EXERCISE_TYPE_REALTIME",
 ]
 
 MARKET_SECTOR_KEYWORDS = {"EQUITY", "INDEX", "CURNCY", "COMDTY"}
@@ -537,16 +540,69 @@ def fetch_projected_dividend(ticker: str) -> Dict[str, object]:
     return _empty_projection()
 
 
-def _fetch_bdvd_schedule(ticker: str) -> list:
-    """Full forward dividend schedule from BDS BDVD_ALL_PROJECTIONS, ex-date
-    ascending: ``[{"ex_date", "declared_date", "dps"}, ...]``.
+# DV147 bulk forward-dividend schedule. Confirmed live (2026-06): this env's
+# polars_bloomberg BQuery has NO ``.bds`` method, but a plain ``bdp`` on this bulk
+# field returns, per security, a numpy array of row dicts
+# ``{'Ex Date': datetime, 'Amount Per Share': float, 'Projected/Confirmed': str}``.
+_BDVD_SCHEDULE_FIELD = "BDVD_PR_EX_DTS_DVD_AMTS_W_ANN"
 
-    The BDS response column names/order are confirmed on the terminal via
-    ``pm/_scratch/_bdvd_probe.py``; the row parser keys to that confirmed layout
-    and drops in here behind this interface. Until then this returns ``[]`` so
-    the ex-div fire uses the yield heuristic. Never raises.
+
+def _parse_bdvd_rows(cell: object) -> list:
+    """Parse a BDVD bulk cell (numpy array / list of row dicts) into the
+    forward-ordered ``[{"ex_date": date, "declared_date": date|None, "dps": float},
+    ...]`` contract. Drops rows missing an ex-date or carrying a non-positive
+    amount. Never raises.
     """
-    return []
+    if cell is None:
+        return []
+    try:
+        rows = list(cell)
+    except TypeError:
+        return []
+    out: list = []
+    for rec in rows:
+        if not isinstance(rec, dict):
+            continue
+        ex = _normalize_dividend_date(rec.get("Ex Date") or rec.get("Ex-Date"))
+        try:
+            dps = float(rec.get("Amount Per Share"))
+        except (TypeError, ValueError):
+            continue
+        if ex is None or not (dps > 0):
+            continue
+        out.append({
+            "ex_date": ex,
+            "declared_date": _normalize_dividend_date(rec.get("Projected Declared Date")),
+            "dps": dps,
+        })
+    out.sort(key=lambda r: r["ex_date"])
+    return out
+
+
+def _fetch_bdvd_schedule(ticker: str) -> list:
+    """Full forward dividend schedule from the BDVD bulk field
+    ``BDVD_PR_EX_DTS_DVD_AMTS_W_ANN`` (DV147), ex-date ascending:
+    ``[{"ex_date", "declared_date", "dps"}, ...]``.
+
+    Access is a plain ``bdp`` on the bulk field (this env has no ``.bds``) whose
+    per-security cell is a numpy array of row dicts — see ``_parse_bdvd_rows``.
+    Never raises; returns ``[]`` on any failure so the ex-div fire degrades to the
+    yield heuristic and the pricing adapter to continuous-q.
+    """
+    if not ticker:
+        return []
+    try:
+        with with_session() as query:
+            raw = query.bdp([ticker], [_BDVD_SCHEDULE_FIELD])
+        df = _ensure_security_column(_to_pandas(raw))
+        if df.empty or _BDVD_SCHEDULE_FIELD not in df.columns:
+            return []
+        match = df.loc[df["security"] == ticker]
+        cell = (match.iloc[0] if not match.empty else df.iloc[0])[_BDVD_SCHEDULE_FIELD]
+        return _parse_bdvd_rows(cell)
+    except Exception as exc:
+        logger.warning("BDVD schedule fetch for %s failed: %s", ticker, exc)
+        return []
 
 
 def _fetch_bdvd_next_estimate(ticker: str) -> Optional[Dict[str, object]]:
@@ -777,6 +833,7 @@ _OPTION_SNAPSHOT_OUTPUT_COLS = [
     "GAMMA",
     "VEGA",
     "RHO",
+    "OPTION_EXERCISE_TYPE_REALTIME",
     "dte",
     "delta_mid",
     "theta",
@@ -784,14 +841,36 @@ _OPTION_SNAPSHOT_OUTPUT_COLS = [
     "vega",
     "rho",
     "iv_mid",
+    "style",
 ]
+
+
+def _normalize_exercise_style(value: object) -> Optional[str]:
+    """Map a Bloomberg ``OPTION_EXERCISE_TYPE_REALTIME`` value to the pricing
+    engine's style key. Returns ``'American'`` / ``'European'`` or ``None`` for
+    anything unrecognized (incl. sentinels / NaN) so the adapter can decide a
+    safe default rather than mis-route the registry.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip().lower()
+    if text.startswith("amer"):
+        return "American"
+    if text.startswith("euro"):
+        return "European"
+    return None
 
 
 def _normalize_option_fields(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize option fields on a BDP frame.
 
     Coalesces MID into PX_MID, casts numeric fields, and exposes lowercase
-    canonical columns (dte, delta_mid, theta, gamma, vega, rho, iv_mid).
+    canonical columns (dte, delta_mid, theta, gamma, vega, rho, iv_mid, style).
     """
     if "MID" in df.columns:
         df["PX_MID"] = pd.to_numeric(df["PX_MID"], errors="coerce")
@@ -839,6 +918,11 @@ def _normalize_option_fields(df: pd.DataFrame) -> pd.DataFrame:
     if "IVOL" in df.columns:
         iv_mid = iv_mid.fillna(pd.to_numeric(df.get("IVOL"), errors="coerce"))
     df["iv_mid"] = iv_mid
+    # Exercise style normalized to the engine's registry key ('American' /
+    # 'European'); anything BBG doesn't classify becomes None (the adapter then
+    # defaults + warns rather than mis-routing).
+    df["style"] = df.get("OPTION_EXERCISE_TYPE_REALTIME").map(_normalize_exercise_style) \
+        if "OPTION_EXERCISE_TYPE_REALTIME" in df.columns else None
     return df
 
 

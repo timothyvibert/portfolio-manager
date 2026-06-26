@@ -37,6 +37,7 @@ class PortfolioSnapshot:
     #         + SPX-relative betas 'EQY_BETA' / 'EQY_RAW_BETA' (for the exposure view)
     options: pd.DataFrame
     # index = option bbg_ticker, cols = OPTION_SNAPSHOT_FIELDS + canonical greek cols
+    #         + 'style' ('American'/'European', for the scenario pricing adapter)
     fetch_warnings: list[str] = field(default_factory=list)
     bloomberg_available: bool = False
 
@@ -161,6 +162,7 @@ def _empty_options_df() -> pd.DataFrame:
         "BID", "ASK", "PX_MID", "PX_LAST", "IVOL_MID", "IVOL",
         "DAYS_TO_EXPIRATION", "DAYS_EXPIRE", "OPT_STRIKE_PX", "OPT_PUT_CALL",
         "DELTA_MID_RT", "THETA", "THETA_MID", "GAMMA", "VEGA", "RHO",
-        "dte", "delta_mid", "theta", "gamma", "vega", "rho", "iv_mid",
+        "OPTION_EXERCISE_TYPE_REALTIME",
+        "dte", "delta_mid", "theta", "gamma", "vega", "rho", "iv_mid", "style",
     ]
     return pd.DataFrame(columns=cols)
