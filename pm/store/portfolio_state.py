@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
 
@@ -36,6 +36,9 @@ from pm.core.position_context import PositionContext, build_position_contexts
 from pm.core.recommender import Recommendation, compute_recommendations
 from pm.ingest.adw_loader import ADWExtract, find_latest_adw_extract, load_adw_extract
 from pm.ingest.position_builder import Position, build_positions
+
+if TYPE_CHECKING:
+    from pm.risk.exposure import AccountExposure
 
 
 logger = logging.getLogger(__name__)
@@ -87,6 +90,11 @@ class AccountState:
     # cash-secured put, straddle / strangle), detected in the load path after the
     # engine. The UI reads these and never recomputes. See pm.insight.structures.
     structures: list = field(default_factory=list)  # list[pm.insight.structures.Structure]
+    # Portfolio exposure aggregation (net dollar greeks, SPX-relative dollar-beta,
+    # market value vs economic exposure, vega by tenor, position->structure->account
+    # rollup), computed in the load path after structure detection. The UI reads it
+    # and never recomputes. See pm.risk.exposure.
+    exposure: Optional["AccountExposure"] = None
 
 
 @dataclass
@@ -218,6 +226,14 @@ def load_portfolio_state(
     # built positions, writes Structure proposals onto each AccountState).
     from pm.insight.structures import run_structure_detection
     run_structure_detection(state)
+
+    # Portfolio exposure aggregation — net dollar greeks, SPX-relative dollar-beta,
+    # market value vs economic exposure, vega by tenor, and the
+    # position -> structure -> account rollup. Reads the already-loaded greeks +
+    # structures + snapshot (no Bloomberg, no recompute) and stores the view on each
+    # AccountState. Runs after detection so the rollup sees the recognised structures.
+    from pm.risk.exposure import run_account_exposure
+    run_account_exposure(state)
 
     # Structure-aware management fires (coverage breach, ex-div context, carry,
     # at-cap, pin, collar-monetize). Appends Fires to each AccountState and

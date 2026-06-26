@@ -15,8 +15,13 @@ from pm.core.bloomberg_client import (
     OPTION_SNAPSHOT_FIELDS,
     UNDERLYING_FIELDS,
     fetch_option_snapshots,
+    fetch_spx_betas,
     fetch_underlying_snapshots,
 )
+
+# SPX-relative beta columns merged onto the underlying snapshot for the exposure
+# view (sourced via a separate override-aware pull — see bloomberg_client.fetch_spx_betas).
+_SPX_BETA_COLS = ("EQY_BETA", "EQY_RAW_BETA")
 from pm.ingest.position_builder import Position
 
 
@@ -29,6 +34,7 @@ class PortfolioSnapshot:
     """Snapshot bundle. v0.3 has underlying + option data."""
     underlyings: pd.DataFrame
     # index = underlying bbg_ticker, cols = UNDERLYING_FIELDS + 'security_name'
+    #         + SPX-relative betas 'EQY_BETA' / 'EQY_RAW_BETA' (for the exposure view)
     options: pd.DataFrame
     # index = option bbg_ticker, cols = OPTION_SNAPSHOT_FIELDS + canonical greek cols
     fetch_warnings: list[str] = field(default_factory=list)
@@ -58,6 +64,9 @@ def fetch_portfolio_snapshot(
     tickers = _unique_underlying_tickers(positions)
     if tickers:
         under_df = fetch_underlying_snapshots(tickers)
+        # Missing-underlying detection runs on the batched fields only (below),
+        # BEFORE the additive SPX-beta columns are merged, so that warning set is
+        # unchanged by this feature.
         missing_underlyings: list[str] = []
         if not under_df.empty:
             for t in tickers:
@@ -74,6 +83,14 @@ def fetch_portfolio_snapshot(
                 f"underlying ticker(s): {missing_underlyings[:5]}"
                 + ("..." if len(missing_underlyings) > 5 else "")
             )
+        # Merge the SPX-relative betas (separate override-aware pull) onto the
+        # underlying snapshot keyed by ticker, so the exposure view reads one
+        # coherent benchmark. Kept apart from the batched pull above so the SPX
+        # override never touches the default BETA_ADJ_OVERRIDABLE that pull returns.
+        spx_betas = fetch_spx_betas(tickers)
+        for col in _SPX_BETA_COLS:
+            under_df[col] = (spx_betas[col].reindex(under_df.index)
+                             if col in getattr(spx_betas, "columns", []) else pd.NA)
     else:
         under_df = _empty_underlyings_df()
         warnings.append("No underlyings to fetch.")
@@ -132,7 +149,7 @@ def _unique_underlying_tickers(positions: list[Position]) -> list[str]:
 
 
 def _empty_underlyings_df() -> pd.DataFrame:
-    cols = ["security_name"] + list(UNDERLYING_FIELDS)
+    cols = ["security_name"] + list(UNDERLYING_FIELDS) + list(_SPX_BETA_COLS)
     return pd.DataFrame(columns=cols)
 
 

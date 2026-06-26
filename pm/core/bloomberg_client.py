@@ -616,6 +616,76 @@ def fetch_underlying_snapshots(tickers: list[str]) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# SPX-relative betas — separate override-aware BDP for the exposure view
+# ---------------------------------------------------------------------------
+# Why this is a separate pull and not two more UNDERLYING_FIELDS:
+# the exposure view needs every name's beta measured against ONE benchmark (SPX),
+# so "net market exposure" is coherent. That requires the BETA_OVERRIDE_REL_INDEX=SPX
+# override — but a BDP override applies to the whole request, and the batched
+# UNDERLYING_FIELDS pull carries BETA_ADJ_OVERRIDABLE (the snapshot's default beta the
+# legacy weighted-beta chip / signals read). Putting the SPX override on that batched
+# call would silently re-point the legacy beta for non-US names (confirmed live:
+# NESN 0.84 -> 0.35 vs SPX). So the SPX betas come from their own override-aware call,
+# leaving the default beta untouched.
+#
+# Source-field note (confirmed live): the EQY_BETA / EQY_RAW_BETA fields IGNORE
+# BETA_OVERRIDE_REL_INDEX, so an SPX-relative beta cannot come from them. The
+# *_OVERRIDABLE fields DO respect it; at their default they equal EQY_BETA (same
+# 2y-weekly methodology), and the override only changes the benchmark to SPX. The
+# results are stored under the EQY_BETA / EQY_RAW_BETA column names the exposure
+# aggregation reads (US names already default to SPX; non-US names move to SPX).
+_SPX_BETA_OVERRIDE = [("BETA_OVERRIDE_REL_INDEX", "SPX Index")]
+_SPX_BETA_SOURCE_FIELDS = ["BETA_ADJ_OVERRIDABLE", "BETA_RAW_OVERRIDABLE"]
+SPX_BETA_COLUMNS = {"BETA_ADJ_OVERRIDABLE": "EQY_BETA",
+                    "BETA_RAW_OVERRIDABLE": "EQY_RAW_BETA"}
+
+
+def fetch_spx_betas(tickers: list[str]) -> pd.DataFrame:
+    """SPX-relative 2y-weekly betas (adjusted + raw) per underlying.
+
+    Returns a DataFrame indexed by Bloomberg ticker with columns ``EQY_BETA``
+    (adjusted) and ``EQY_RAW_BETA`` (raw), both measured against SPX via the
+    BETA_OVERRIDE_REL_INDEX override (see the module comment above for why this is a
+    separate pull and why the values are sourced from the *_OVERRIDABLE fields).
+    Missing values are NaN. On any error (no session, override unsupported, partial
+    response) logs at WARNING and returns an empty DataFrame with the expected
+    columns. Never raises.
+    """
+    cols = ["EQY_BETA", "EQY_RAW_BETA"]
+    if not tickers:
+        return pd.DataFrame(columns=cols)
+
+    try:
+        with with_session() as query:
+            raw = query.bdp(list(tickers), _SPX_BETA_SOURCE_FIELDS,
+                            overrides=_SPX_BETA_OVERRIDE)
+    except TypeError:
+        # polars_bloomberg without override support — an SPX-relative beta is
+        # impossible here, so surface nothing rather than a wrong default-index beta.
+        logger.warning("SPX-beta pull: bdp overrides unsupported; SPX betas unavailable")
+        return pd.DataFrame(columns=cols)
+    except Exception as exc:
+        logger.warning("SPX-beta pull failed: %s", exc)
+        return pd.DataFrame(columns=cols)
+
+    df = _ensure_security_column(_to_pandas(raw))
+    df = _ensure_columns(df, _SPX_BETA_SOURCE_FIELDS)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    sentinels = {"N.A.", "#N/A N/A", "#N/A Field Not Applicable", ""}
+    for col in _SPX_BETA_SOURCE_FIELDS:
+        df[col] = df[col].apply(
+            lambda v: pd.NA if isinstance(v, str) and v.strip() in sentinels else v
+        )
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.rename(columns=SPX_BETA_COLUMNS).set_index("security")
+    df = df.reindex(list(tickers))
+    return df[cols]
+
+
+# ---------------------------------------------------------------------------
 # UBS analyst-note dates — batched BDP for D3
 # ---------------------------------------------------------------------------
 

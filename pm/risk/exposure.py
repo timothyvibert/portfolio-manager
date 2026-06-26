@@ -396,3 +396,15 @@ def compute_account_exposure(account_state, *, beta_source: str = "adjusted",
         warnings=warnings,
         trace=trace,
     )
+
+
+def run_account_exposure(state) -> None:
+    """Compute and attach the exposure view for every account, in the load path.
+
+    Reads each account's already-loaded greeks + structures + snapshot and stores the
+    result on ``acc.exposure`` — no Bloomberg, no recompute. Called after structure
+    detection so the rollup sees the recognised structures; the UI only reads the
+    stored view."""
+    for acc in state.accounts.values():
+        acc.exposure = compute_account_exposure(acc)
+
