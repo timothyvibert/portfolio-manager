@@ -21,7 +21,8 @@ from pm.ui.deepdive.positions import build_positions_rows, render_positions_sect
 from pm.ui.deepdive.structures_panel import build_structure_rows, render_structure_detail
 
 _DD_HOST_IDS = [
-    "deepdive-kpi", "deepdive-positions", "deepdive-analytics", "deepdive-trades",
+    "deepdive-kpi", "deepdive-positions", "deepdive-exposure",
+    "deepdive-analytics", "deepdive-trades",
 ]
 
 
@@ -69,6 +70,7 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
     @app.callback(
         Output("deepdive-kpi", "children"),
         Output("deepdive-positions", "children"),
+        Output("deepdive-exposure", "children"),
         Output("deepdive-analytics", "children"),
         Output("deepdive-trades", "children"),
         Input("deepdive-account-picker", "value"),

@@ -1323,6 +1323,31 @@ html, body {
     text-align: right; font-family: "Consolas", monospace;
 }
 
+/* Exposure section — the vega tenor row (six columns) + the structure -> account
+   rollup table. Reuses the dd-panel / am-table look and the --pos / --neg /
+   charcoal / urgent tokens; no new palette. */
+.dd-vega-ladder .dd-ladder-row { grid-template-columns: 104px repeat(5, 1fr); }
+.dd-vega-ladder .dd-ladder-head span:not(:first-child),
+.dd-vega-ladder .dd-ladder-count { text-align: right; }
+
+.dd-exposure-rollup { margin-top: 6px; }
+.exposure-table th, .exposure-table td { white-space: nowrap; }
+.exposure-label { color: var(--pm-charcoal); font-weight: 600; }
+.exposure-num {
+    text-align: right; font-family: "Consolas", monospace;
+    font-variant-numeric: tabular-nums; color: var(--pm-grey-700);
+}
+.exposure-pos { color: var(--pos); }
+.exposure-neg { color: var(--neg); }
+.exposure-row-subtotal td { border-top: 1px solid var(--pm-grey-300); font-weight: 600; }
+.exposure-row-total td { border-top: 2px solid var(--pm-grey-300); font-weight: 700; }
+/* Contention alternatives — de-emphasised (grey) with the urgent edge cue so they
+   read as alternatives, not additive contributors. */
+.exposure-row-contention td { color: var(--pm-grey-500); }
+.exposure-row-contention { box-shadow: inset 3px 0 0 0 var(--pm-urgent); }
+.exposure-row-contention .exposure-label { font-style: italic; font-weight: 500; }
+.exposure-degraded-mark { color: var(--pm-urgent); font-weight: 700; }
+
 /* Horizontal bar lists (sector / concentration) — CSS only, no chart dep */
 .dd-bars { display: flex; flex-direction: column; gap: 5px; }
 .dd-bar-row {

@@ -15,7 +15,6 @@ from pm.ui.deepdive.aggregations import (
     _fmt_money,
     expiry_ladder,
     long_short_premium_split,
-    net_greeks_summary,
     top_concentrations,
 )
 
@@ -33,22 +32,6 @@ def _stat(label: str, value: str, sub: Optional[str] = None, cls: str = "") -> h
 
 
 # ---- panels ---------------------------------------------------------------
-
-def _greeks_panel(account_state) -> html.Div:
-    g = net_greeks_summary(account_state)
-    pct = g.get("delta_pct_of_nav")
-    return html.Div(className="dd-panel", children=[
-        html.H3("Net dollar Greeks", className="dd-panel-title"),
-        html.Div(className="dd-stat-row", children=[
-            _stat("Net $ Delta", _fmt_money(g["dollar_delta"]),
-                  f"{_pct(pct)} of NAV" if pct is not None else None),
-            _stat("Net $ Gamma", _fmt_money(g["dollar_gamma"])),
-            _stat("Net $ Vega", _fmt_money(g["dollar_vega"])),
-            _stat("Net $ Theta", _fmt_money(g["dollar_theta"])),
-        ]),
-        html.Div(g["interpretation"], className="dd-panel-note"),
-    ])
-
 
 def _premium_panel(account_state) -> html.Div:
     s = long_short_premium_split(account_state)
@@ -156,7 +139,6 @@ def render_analytics_section(account_state) -> html.Div:
             html.H2("Analytics", className="dd-section-title"),
         ]),
         html.Div(className="dd-analytics-grid", children=[
-            _greeks_panel(account_state),
             _premium_panel(account_state),
             _ladder_panel(account_state),
             _sector_panel(account_state),
