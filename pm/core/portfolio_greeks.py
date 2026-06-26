@@ -49,6 +49,10 @@ class PortfolioGreeks:
 
 
 _BY_POSITION_COLS = [
+    # position_id is the canonical Position key — it lets exposure / rollup views
+    # join a greek row back to its holding (and its expiry) without re-deriving the
+    # option ticker. bbg_ticker stays as the market identifier.
+    "position_id",
     "bbg_ticker", "instrument_type", "underlying_ticker", "right",
     "quantity", "multiplier", "spot",
     "delta", "vega", "theta", "gamma",
@@ -149,6 +153,7 @@ def compute_portfolio_greeks(
         dollar_gamma = 0.0
 
         rows.append({
+            "position_id": p.position_id,
             "bbg_ticker": bbg,
             "instrument_type": "equity",
             "underlying_ticker": bbg,
@@ -205,6 +210,7 @@ def compute_portfolio_greeks(
         dollar_gamma = qty_f * mult * gamma * spot  # $Δ per $1 spot move
 
         rows.append({
+            "position_id": p.position_id,
             "bbg_ticker": opt_ticker,
             "instrument_type": "option",
             "underlying_ticker": under_ticker,

@@ -15,6 +15,12 @@ from __future__ import annotations
 
 from typing import Optional
 
+# The allocation ledger (how much of each position the structures claim vs leave
+# standalone) now lives with the structure model in pm.insight.structures, so the
+# By-Structure view and the portfolio exposure rollup share one conservation rule.
+# Re-exported here so existing callers keep importing it from this module.
+from pm.insight.structures import reconcile_allocations  # noqa: F401
+
 # Tier-2 placeholder — a clean "incomplete" marker, distinct from the legacy
 # "<indicative — terminal quote required>" alert-rationale token.
 PENDING_PRICING = "pending pricing"
@@ -95,66 +101,3 @@ def structure_economics(structure, by_id: dict) -> dict:
         "greeks": PENDING_PRICING,
         "theoretical_value": PENDING_PRICING,
     }
-
-
-def reconcile_allocations(account_state) -> dict:
-    """Signed-slice invariant, surfaced at the view level: for every position,
-    the sum of its allocated slices across all non-rejected structures must equal
-    the position's full quantity (no position dropped, none double-counted). Any
-    unallocated remainder is what the By Structure 'Standalone' rows must carry.
-
-    Returns ``{position_id: {"allocated", "quantity", "ok", "remainder"}}``.
-    """
-    by_id = {p.position_id: p for p in account_state.positions}
-    allocated: dict[str, float] = {}
-
-    def _add(pid: str, qty) -> None:
-        try:
-            allocated[pid] = allocated.get(pid, 0.0) + float(qty)
-        except (TypeError, ValueError):
-            pass
-
-    # Contention groups are mutually-exclusive readings of the SAME legs — a
-    # contended leg appears in every alternative, so it must count once, not
-    # once per reading. Collapse each group to a single allocation per position.
-    groups: dict[str, list] = {}
-    for st in getattr(account_state, "structures", []) or []:
-        if st.status == "rejected":
-            continue
-        if st.contention_group:
-            groups.setdefault(st.contention_group, []).append(st)
-        else:
-            for leg in st.legs:
-                _add(leg.position_id, leg.allocated_qty)
-    for alts in groups.values():
-        per_pos: dict[str, float] = {}
-        for alt in alts:
-            for leg in alt.legs:
-                cur = per_pos.get(leg.position_id)
-                try:
-                    val = float(leg.allocated_qty)
-                except (TypeError, ValueError):
-                    continue
-                if cur is None or abs(val) > abs(cur):
-                    per_pos[leg.position_id] = val
-        for pid, qty in per_pos.items():
-            _add(pid, qty)
-
-    out: dict[str, dict] = {}
-    for pid, pos in by_id.items():
-        alloc = allocated.get(pid, 0.0)
-        qty = pos.quantity
-        try:
-            full = float(qty) if qty is not None else None
-        except (TypeError, ValueError):
-            full = None
-        if full is None:
-            ok, remainder = True, None          # can't reconcile a None-qty position; not a drop
-        else:
-            remainder = full - alloc            # carried by a Standalone row when non-zero
-            # The bug this catches: a position allocated beyond its own size, or
-            # with the wrong sign (double-counted across structures).
-            ok = (abs(alloc) <= abs(full) + 1e-6
-                  and (alloc == 0 or (alloc > 0) == (full > 0)))
-        out[pid] = {"allocated": alloc, "quantity": full, "ok": ok, "remainder": remainder}
-    return out

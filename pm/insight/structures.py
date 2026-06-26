@@ -446,3 +446,77 @@ def run_structure_detection(state) -> None:
         structures = detect_account_structures(account_state)
         apply_resolutions(account_state.account, structures, resolutions)
         account_state.structures = structures
+
+
+# ---------------------------------------------------------------------------
+# Allocation reconciliation — the shared signed-slice ledger
+# ---------------------------------------------------------------------------
+# How much of each position is claimed by the recognised structures, and how much
+# is left standalone. This is the one place that knows the conservation rule
+# (every position's allocated slices + its unallocated remainder == its full
+# quantity), so every surface that splits a book into structured vs standalone —
+# the By-Structure holdings view and the portfolio exposure rollup — reads it
+# instead of re-deriving the arithmetic. Pure and duck-typed: it reads only
+# ``account_state.structures`` and ``account_state.positions``.
+
+def reconcile_allocations(account_state) -> dict:
+    """Signed-slice invariant: for every position, the sum of its allocated slices
+    across all non-rejected structures plus its unallocated remainder must equal
+    the position's full quantity (no position dropped, none double-counted). The
+    remainder is what the standalone / unstructured views carry.
+
+    Returns ``{position_id: {"allocated", "quantity", "ok", "remainder"}}``.
+    """
+    by_id = {p.position_id: p for p in account_state.positions}
+    allocated: dict[str, float] = {}
+
+    def _add(pid: str, qty) -> None:
+        try:
+            allocated[pid] = allocated.get(pid, 0.0) + float(qty)
+        except (TypeError, ValueError):
+            pass
+
+    # Contention groups are mutually-exclusive readings of the SAME legs — a
+    # contended leg appears in every alternative, so it must count once, not
+    # once per reading. Collapse each group to a single allocation per position.
+    groups: dict[str, list] = {}
+    for st in getattr(account_state, "structures", []) or []:
+        if st.status == "rejected":
+            continue
+        if st.contention_group:
+            groups.setdefault(st.contention_group, []).append(st)
+        else:
+            for leg in st.legs:
+                _add(leg.position_id, leg.allocated_qty)
+    for alts in groups.values():
+        per_pos: dict[str, float] = {}
+        for alt in alts:
+            for leg in alt.legs:
+                cur = per_pos.get(leg.position_id)
+                try:
+                    val = float(leg.allocated_qty)
+                except (TypeError, ValueError):
+                    continue
+                if cur is None or abs(val) > abs(cur):
+                    per_pos[leg.position_id] = val
+        for pid, qty in per_pos.items():
+            _add(pid, qty)
+
+    out: dict[str, dict] = {}
+    for pid, pos in by_id.items():
+        alloc = allocated.get(pid, 0.0)
+        qty = pos.quantity
+        try:
+            full = float(qty) if qty is not None else None
+        except (TypeError, ValueError):
+            full = None
+        if full is None:
+            ok, remainder = True, None          # can't reconcile a None-qty position; not a drop
+        else:
+            remainder = full - alloc            # carried by a standalone / unstructured row when non-zero
+            # The bug this catches: a position allocated beyond its own size, or
+            # with the wrong sign (double-counted across structures).
+            ok = (abs(alloc) <= abs(full) + 1e-6
+                  and (alloc == 0 or (alloc > 0) == (full > 0)))
+        out[pid] = {"allocated": alloc, "quantity": full, "ok": ok, "remainder": remainder}
+    return out
