@@ -22,7 +22,7 @@ from pm.ui.deepdive.structures_panel import build_structure_rows, render_structu
 
 _DD_HOST_IDS = [
     "deepdive-kpi", "deepdive-positions", "deepdive-exposure",
-    "deepdive-analytics", "deepdive-trades",
+    "deepdive-scenario", "deepdive-analytics", "deepdive-trades",
 ]
 
 
@@ -71,6 +71,7 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
         Output("deepdive-kpi", "children"),
         Output("deepdive-positions", "children"),
         Output("deepdive-exposure", "children"),
+        Output("deepdive-scenario", "children"),
         Output("deepdive-analytics", "children"),
         Output("deepdive-trades", "children"),
         Input("deepdive-account-picker", "value"),

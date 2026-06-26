@@ -14,6 +14,7 @@ from dash import html
 from pm.store.portfolio_state import PortfolioState
 from pm.ui.deepdive.analytics import render_analytics_section
 from pm.ui.deepdive.exposure import render_exposure_section
+from pm.ui.deepdive.scenario import render_scenario_section
 from pm.ui.deepdive.header import (
     default_account,
     render_account_picker,
@@ -37,6 +38,7 @@ def render_deepdive_sections(state: Optional[PortfolioState], account: Optional[
             "deepdive-kpi": empty,
             "deepdive-positions": empty,
             "deepdive-exposure": empty,
+            "deepdive-scenario": empty,
             "deepdive-analytics": empty,
             "deepdive-trades": empty,
         }
@@ -44,6 +46,7 @@ def render_deepdive_sections(state: Optional[PortfolioState], account: Optional[
         "deepdive-kpi": render_kpis(acc_state),
         "deepdive-positions": render_positions_section(acc_state, state, pos_view, expanded_sids),
         "deepdive-exposure": render_exposure_section(acc_state),
+        "deepdive-scenario": render_scenario_section(acc_state),
         "deepdive-analytics": render_analytics_section(acc_state),
         "deepdive-trades": render_trades_section(acc_state),
     }
@@ -62,6 +65,7 @@ def render_deepdive_tab(state: Optional[PortfolioState]) -> html.Div:
                  children=sections["deepdive-kpi"]),
         html.Div(id="deepdive-positions", children=sections["deepdive-positions"]),
         html.Div(id="deepdive-exposure", children=sections["deepdive-exposure"]),
+        html.Div(id="deepdive-scenario", children=sections["deepdive-scenario"]),
         html.Div(id="deepdive-analytics", children=sections["deepdive-analytics"]),
         html.Div(id="deepdive-trades", children=sections["deepdive-trades"]),
     ])

@@ -95,6 +95,10 @@ class AccountState:
     # rollup), computed in the load path after structure detection. The UI reads it
     # and never recomputes. See pm.risk.exposure.
     exposure: Optional["AccountExposure"] = None
+    # Deterministic stress / scenario views (co-moving shock table at truth-CRR +
+    # the beta-mapped portfolio P&L curve at fast BS2002), pre-computed in the load
+    # path after exposure. The UI reads it and never recomputes. See pm.risk.scenario.
+    scenario: Optional["AccountScenario"] = None
 
 
 @dataclass
@@ -234,6 +238,14 @@ def load_portfolio_state(
     # AccountState. Runs after detection so the rollup sees the recognised structures.
     from pm.risk.exposure import run_account_exposure
     run_account_exposure(state)
+
+    # Deterministic stress / scenario engine — pre-computes the co-moving shock
+    # table (truth-CRR points) and the beta-mapped portfolio P&L curve (fast
+    # vectorized BS2002) onto each AccountState. Built on the pricing adapter; the
+    # first engine-consuming risk view. Reads already-loaded state (no Bloomberg,
+    # no recompute). Runs after exposure so beta + greeks are in place.
+    from pm.risk.scenario import run_account_scenario
+    run_account_scenario(state)
 
     # Structure-aware management fires (coverage breach, ex-div context, carry,
     # at-cap, pin, collar-monetize). Appends Fires to each AccountState and
