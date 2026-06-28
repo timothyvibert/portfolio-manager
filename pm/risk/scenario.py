@@ -1,24 +1,24 @@
-"""Deterministic stress / scenario engine (risk rung 2, part 2b).
+"""Deterministic stress / scenario engine (risk rung 2).
 
-Pre-computed in the load path (``run_account_scenario``) -> ``AccountState.scenario``;
-the UI renders, never recomputes. Built on the 2a pricing adapter
-(``pm.risk.pricing_adapter``) -- the first engine-consuming risk view.
+Two consumers, one shared shocked-input / price path so a dialed point and a
+precomputed preset are the *same* reprice, never an interpolation:
 
-Pricer tiers (enforced):
-  * the scenario TABLE prices each shocked state at **truth-CRR** (discrete-div,
-    scalar, tree-node gamma) -- accurate points;
-  * the portfolio P&L CURVE sweeps spot at **fast vectorized BS2002**
-    (continuous-q) -- illustrative shape.
-A sweep is NEVER priced at truth (~29 s on the book -- infeasible). Greeks / prices
-come from the engine (the scenario boundary); the exposure rung's outputs are untouched.
+  * load path -- ``run_account_scenario`` pre-computes the co-moving preset table
+    (leaned to truth-CRR n=200) + the fast P&L curve onto ``AccountState.scenario``;
+  * interactive -- ``price_scenario`` (in state_access) calls ``shock_reprice``
+    (per position/structure) + ``spot_vol_grid`` (the heatmap mesh) live, read-only
+    over already-loaded state.
 
-Shock library (blueprint Section 5.2) -- co-moving axis shocks applied *together*:
-market +-5/+-10/+-20 % (beta-mapped via the rung-1 SPX ``EQY_BETA``), vol +-5/+-10
-points, crash (-20 % spot + 10 vol), melt-up (+15 % spot - 5 vol), rates +-50 bps
-(parallel curve shift before ``pick_rate_for_dte``), time +1w / +1m (a full reprice
-at the shorter tenor with the discrete-div schedule re-anchored to the shifted date --
-NOT a theta extrapolation, so the divergent engine theta never touches the headline
-P&L). A custom scenario (2c) plugs in as one more ``ShockSpec``.
+Pricer tiers (enforced): every SWEEP / grid is **fast vectorized BS2002**; **truth-CRR**
+is used only for discrete scenario *points* (preset table) and a committed point. A
+sweep is never priced at truth. Greeks / prices come from the engine (the scenario
+boundary); the exposure rung's outputs are untouched.
+
+Shock library (blueprint 5.2) -- co-moving axis shocks applied *together*: market
++-5/10/20 % (beta-mapped via the rung-1 SPX ``EQY_BETA``), vol +-5/10 pts, crash,
+melt-up, rates +-50 bps (parallel curve shift), time +1w/+1m (full reprice at the
+shorter tenor, discrete divs re-anchored to the shifted date). A custom dialed shock
+is just a ``ShockSpec`` with arbitrary axes.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ import pandas as pd
 
 from pm.core.bloomberg_client import pick_rate_for_dte
 from pm.pricing import american_crr, european, strategy
+from pm.pricing.american_crr import DEFAULT_CRR_STEPS, FAST_CRR_STEPS
 from pm.pricing.conventions import year_frac
 from pm.risk.pricing_adapter import EngineLeg, build_engine_legs
 
@@ -41,8 +42,14 @@ BETA_FIELD = "EQY_BETA"          # rung-1 SPX-adjusted beta (snapshot.underlying
 DEFAULT_BETA = 1.0               # full market participation when a name has no beta
 SIGMA_FLOOR = 1e-4
 _T_FLOOR = 1e-6
-CURVE_SPAN_PCT = 25.0            # +- SPX move spanned by the P&L curve
+CURVE_SPAN_PCT = 25.0            # +- SPX move spanned by the (v1) P&L curve
 CURVE_POINTS = 101
+PRESET_STEPS = FAST_CRR_STEPS    # leaned preset-table tier (n=200 truth)
+
+# spot x vol heatmap mesh (fast vectorized BS2002).
+GRID_SPOT_SPAN = 20.0
+GRID_SPOT_N = 21                 # -20..+20 in 2% steps
+GRID_VOL_PTS = [-10.0, -7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5, 10.0]
 
 
 # --------------------------------------------------------------------------
@@ -92,22 +99,20 @@ SHOCK_LIBRARY: list[ShockSpec] = [
     ShockSpec("time_1m", "Time +1 month", time_days=30),
 ]
 
-# The pure-spot market shocks whose truth points double as the curve's CRR
-# confidence-band anchors (co-moving crash/melt-up are excluded -- not pure spot).
 _MARKET_BAND_SHOCKS = ("mkt_dn_20", "mkt_dn_10", "mkt_dn_5", "mkt_up_5", "mkt_up_10", "mkt_up_20")
 
 
 # --------------------------------------------------------------------------
-# Result types
+# Result types (load-path precompute)
 # --------------------------------------------------------------------------
 @dataclass
 class ScenarioPoint:
     name: str
     label: str
     axes: dict
-    pnl: float                       # account P&L under the shock (truth-CRR)
-    pnl_pct: Optional[float]         # vs NAV
-    attribution: dict                # {delta, gamma, vega, theta, residual}; theta caveated
+    pnl: float                       # account P&L under the shock (truth-CRR n=200)
+    pnl_pct: Optional[float]
+    attribution: dict                # empty on the leaned load path (computed on-expand)
     trace: dict
 
 
@@ -117,7 +122,7 @@ class AccountScenario:
     as_of: date
     nav: Optional[float]
     scenarios: list[ScenarioPoint]   # ranked worst-loss first
-    curve: dict                      # {x_pct, pnl, band_lo, band_hi, truth_x, truth_pnl, breakevens}
+    curve: dict
     n_priceable: int
     n_unpriceable: int
     div_modes: dict
@@ -126,15 +131,13 @@ class AccountScenario:
 
 
 # --------------------------------------------------------------------------
-# Load-path entry point
+# Load-path entry point (leaned: presets at n=200, no eager attribution)
 # --------------------------------------------------------------------------
 def run_account_scenario(state, today=None) -> None:
-    """Attach a pre-computed ``AccountScenario`` to every account. Mirrors
-    ``run_account_exposure``: pure, read-only over already-loaded state."""
     for acc in getattr(state, "accounts", {}).values():
         try:
             acc.scenario = compute_account_scenario(state, acc, today=today)
-        except Exception as exc:  # noqa: BLE001 -- one bad account never blocks the load
+        except Exception as exc:  # noqa: BLE001
             logger.warning("scenario compute failed for %s: %s",
                            getattr(acc, "account", "?"), exc)
             acc.scenario = None
@@ -142,33 +145,29 @@ def run_account_scenario(state, today=None) -> None:
 
 def compute_account_scenario(state, account_state, today=None) -> AccountScenario:
     today_ts = _normalize_today(today)
-    legs = [lg for lg in build_engine_legs(state, account_state, today=today_ts) if lg.priceable]
-    n_all = len(build_engine_legs(state, account_state, today=today_ts))
+    all_legs = build_engine_legs(state, account_state, today=today_ts)
+    legs = [lg for lg in all_legs if lg.priceable]
     beta_map = _beta_map(account_state)
     equities = _equity_legs(account_state, beta_map)
     curve_pts = getattr(state, "risk_free_curve", None) or []
-
-    # Base truth prices (per leg) + base truth greeks (for attribution, computed once).
-    base_price = {lg.position_id: _truth_price(lg, lg.spot, lg.sigma, lg.r, lg.T, lg.today)
-                  for lg in legs}
-    base_greeks = {lg.position_id: (lg.greeks(mode="truth") or {}) for lg in legs}
     nav = _num(getattr(account_state, "nav", None))
+
+    # leaned truth baseline at n=200 (no eager greeks/attribution)
+    base_price = {lg.position_id: _truth_price(lg, lg.spot, lg.sigma, lg.r, lg.T,
+                                               lg.today, n_steps=PRESET_STEPS)
+                  for lg in legs}
 
     scenarios: list[ScenarioPoint] = []
     for shock in SHOCK_LIBRARY:
-        pnl, attrib = _scenario_pnl(legs, equities, beta_map, base_price, base_greeks,
-                                    curve_pts, today_ts, shock)
+        pnl = _account_pnl(legs, equities, beta_map, base_price, curve_pts, today_ts,
+                           shock, mode="truth", n_steps=PRESET_STEPS)
         scenarios.append(ScenarioPoint(
             name=shock.name, label=shock.label, axes=shock.axes(),
-            pnl=pnl, pnl_pct=(pnl / nav if nav else None),
-            attribution=attrib,
-            trace={"pricer": "truth-CRR (per point)", "shock": shock.axes(),
-                   "beta_source": f"BBG {BETA_FIELD} (SPX adjusted, rung 1)"},
-        ))
-    scenarios.sort(key=lambda s: s.pnl)   # worst loss first
+            pnl=pnl, pnl_pct=(pnl / nav if nav else None), attribution={},
+            trace={"pricer": "truth-CRR n=200 (per point)", "shock": shock.axes()}))
+    scenarios.sort(key=lambda s: s.pnl)
 
     curve = _portfolio_curve(legs, equities, beta_map, scenarios, today_ts)
-
     div_modes: dict = {}
     for lg in legs:
         div_modes[lg.div_mode] = div_modes.get(lg.div_mode, 0) + 1
@@ -176,60 +175,216 @@ def compute_account_scenario(state, account_state, today=None) -> AccountScenari
     return AccountScenario(
         account=getattr(account_state, "account", ""), as_of=today_ts.date(), nav=nav,
         scenarios=scenarios, curve=curve,
-        n_priceable=len(legs), n_unpriceable=n_all - len(legs), div_modes=div_modes,
+        n_priceable=len(legs), n_unpriceable=len(all_legs) - len(legs), div_modes=div_modes,
         warnings=[w for lg in legs for w in lg.warnings],
-        trace={"pricer_table": "truth-CRR", "pricer_curve": "fast vectorized BS2002",
-               "shock_count": len(SHOCK_LIBRARY), "as_of": today_ts.date().isoformat()},
-    )
+        trace={"pricer_table": "truth-CRR n=200", "pricer_curve": "fast vectorized BS2002",
+               "attribution": "on-expand only", "as_of": today_ts.date().isoformat()})
 
 
 # --------------------------------------------------------------------------
-# Scenario P&L (truth) + attribution
+# Interactive reprice — per position/structure impact (the price_scenario table)
 # --------------------------------------------------------------------------
-def _scenario_pnl(legs, equities, beta_map, base_price, base_greeks, curve_pts,
-                  today_ts, shock: ShockSpec):
+def shock_reprice(state, account_state, shock: ShockSpec, today=None, target=None,
+                  mode="fast") -> dict:
+    """Per-position / structure P&L (+ shocked-state dollar greeks) under one shock,
+    plus the account total. The per-position rows SUM to the account total. Fast on
+    the dial; ``mode='truth'`` for a committed point. Pure, read-only."""
+    today_ts = _normalize_today(today)
+    legs, equities = _select(state, account_state, target, today_ts)
+    beta_map = _beta_map(account_state)
+    shifted = _shifted_curve(getattr(state, "risk_free_curve", None) or [], shock.rate_bps)
+    nav = _num(getattr(account_state, "nav", None))
+
+    rows: list[dict] = []
     total = 0.0
-    a_delta = a_gamma = a_vega = a_theta = 0.0
-    # time shift (shared)
-    if shock.time_days:
-        today2 = today_ts + pd.Timedelta(days=shock.time_days)
-        dt_bd = float(np.busday_count(today_ts.date(), today2.date()))
-    else:
-        today2, dt_bd = today_ts, 0.0
-    shifted_curve = _shifted_curve(curve_pts, shock.rate_bps)
-
     for lg in legs:
         beta = beta_map.get(lg.underlying_bbg, DEFAULT_BETA)
-        d_spot = lg.spot * beta * shock.spot_pct / 100.0
-        s_shocked = lg.spot + d_spot
-        sigma_shocked = max(lg.sigma + shock.vol_pts / 100.0, SIGMA_FLOOR)
-        if shock.time_days:
-            T = max(year_frac(today2.date(), lg.expiry), _T_FLOOR)
+        S, sigma, r, T, t2 = _shocked_inputs(lg, beta, shock, shifted, today_ts)
+        px0 = _price_at(lg, lg.spot, lg.sigma, lg.r, lg.T, lg.today, mode)
+        px1 = _price_at(lg, S, sigma, r, T, t2, mode)
+        mult = lg.qty * lg.multiplier
+        pnl = mult * (px1 - px0)
+        total += pnl
+        g = _greeks_at(lg, S, sigma, r, T, t2, mode)
+        rows.append({
+            "id": lg.position_id, "label": _leg_label(lg), "kind": "option",
+            "underlying": lg.underlying_bbg, "structure_id": _structure_of(account_state, lg.position_id),
+            "pnl": pnl, "dd": mult * g.get("delta", 0.0) * S, "dg": mult * g.get("gamma", 0.0) * S,
+            "dv": mult * g.get("vega", 0.0), "dt": mult * g.get("theta", 0.0)})
+    for eq in equities:
+        d_spot = eq["spot"] * eq["beta"] * shock.spot_pct / 100.0
+        pnl = eq["qty"] * d_spot
+        total += pnl
+        rows.append({
+            "id": eq["bbg"], "label": eq["bbg"], "kind": "equity", "underlying": eq["bbg"],
+            "structure_id": None, "pnl": pnl, "dd": eq["qty"] * (eq["spot"] + d_spot),
+            "dg": 0.0, "dv": 0.0, "dt": 0.0})
+
+    rows.sort(key=lambda r: r["pnl"])
+    return {"account_pnl": total, "account_pnl_pct": (total / nav if nav else None), "rows": rows}
+
+
+def spot_vol_grid(state, account_state, *, rate_bps=0.0, time_days=0, target=None,
+                  today=None) -> dict:
+    """The spot x vol P&L mesh for the heatmap, fast vectorized BS2002 (never truth).
+    Cells are P&L vs the *current* (unshocked) state; rate/time shocks shift the
+    per-leg r / T / today before the sweep. Pure, read-only."""
+    today_ts = _normalize_today(today)
+    legs, equities = _select(state, account_state, target, today_ts)
+    beta_map = _beta_map(account_state)
+    shifted = _shifted_curve(getattr(state, "risk_free_curve", None) or [], rate_bps)
+    spot_axis = np.round(np.linspace(-GRID_SPOT_SPAN, GRID_SPOT_SPAN, GRID_SPOT_N), 4)
+    vol_axis = np.array(GRID_VOL_PTS, dtype=float)
+    matrix = np.zeros((len(vol_axis), len(spot_axis)))
+
+    t2 = (today_ts + pd.Timedelta(days=time_days)) if time_days else None
+    for lg in legs:
+        beta = beta_map.get(lg.underlying_bbg, DEFAULT_BETA)
+        if time_days:
+            T = max(year_frac(t2.date(), lg.expiry), _T_FLOOR)
+            r = _shocked_rate(lg, shifted, t2, rate_bps)
         else:
             T = lg.T
-        r = _shocked_rate(lg, shifted_curve, today2, shock.rate_bps)
-        px = _truth_price(lg, s_shocked, sigma_shocked, r, T, today2)
+            r = _shocked_rate(lg, shifted, lg.today, rate_bps)
+        px0 = float(strategy.price_leg(lg.spot, lg.K, lg.T, lg.r, lg.q, lg.sigma,
+                                       lg.opt_type, style=lg.style, mode="fast"))  # current state
+        s_arr = lg.spot * (1.0 + beta * spot_axis / 100.0)
         mult = lg.qty * lg.multiplier
-        total += mult * (px - base_price[lg.position_id])
-        # attribution from base greeks (engine-native units)
-        g = base_greeks.get(lg.position_id) or {}
-        a_delta += mult * g.get("delta", 0.0) * d_spot
-        a_gamma += mult * 0.5 * g.get("gamma", 0.0) * d_spot ** 2
-        a_vega += mult * g.get("vega", 0.0) * shock.vol_pts
-        a_theta += mult * g.get("theta", 0.0) * dt_bd
+        for vi, vp in enumerate(vol_axis):
+            sig = max(lg.sigma + vp / 100.0, SIGMA_FLOOR)
+            px = np.asarray(strategy.price_leg(s_arr, lg.K, T, r, lg.q, sig, lg.opt_type,
+                                               style=lg.style, mode="fast"), dtype=float)
+            matrix[vi, :] += mult * (px - px0)
+    for eq in equities:                                   # linear, vol-independent
+        matrix += (eq["qty"] * eq["spot"] * eq["beta"] * spot_axis / 100.0)[None, :]
 
-    for eq in equities:                                   # linear, market only
-        d_spot = eq["spot"] * eq["beta"] * shock.spot_pct / 100.0
-        total += eq["qty"] * d_spot
-        a_delta += eq["qty"] * d_spot
-
-    attrib = {"delta": a_delta, "gamma": a_gamma, "vega": a_vega, "theta": a_theta,
-              "residual": total - (a_delta + a_gamma + a_vega + a_theta)}
-    return total, attrib
+    return {"spot_axis": spot_axis.tolist(), "vol_axis": vol_axis.tolist(),
+            "pnl_matrix": matrix.tolist(), "pricer": "fast vectorized BS2002"}
 
 
 # --------------------------------------------------------------------------
-# Portfolio P&L curve (fast vectorized BS2002) + CRR confidence band
+# Shared shocked-input / price / greeks core (the gate's "same reprice" guarantee)
+# --------------------------------------------------------------------------
+def _bd(ts) -> pd.Timestamp:
+    """Roll a date to the most recent business day — the truth engine's CRR theta
+    step (busday_offset) requires a business-day as-of, and a weekend load date or a
+    time-shock landing on a weekend would otherwise raise."""
+    return pd.Timestamp(np.busday_offset(pd.Timestamp(ts).date(), 0, roll="backward"))
+
+
+def _shocked_inputs(leg: EngineLeg, beta, shock: ShockSpec, shifted_curve, today_ts):
+    S = leg.spot * (1.0 + beta * shock.spot_pct / 100.0)
+    sigma = max(leg.sigma + shock.vol_pts / 100.0, SIGMA_FLOOR)
+    if shock.time_days:
+        t2 = _bd(today_ts + pd.Timedelta(days=shock.time_days))
+        T = max(year_frac(t2.date(), leg.expiry), _T_FLOOR)
+    else:
+        t2 = leg.today
+        T = leg.T
+    r = _shocked_rate(leg, shifted_curve, t2, shock.rate_bps)
+    return S, sigma, r, T, t2
+
+
+def _price_at(leg, S, sigma, r, T, today, mode, n_steps=None):
+    if mode == "truth":
+        return _truth_price(leg, S, sigma, r, T, today, n_steps=n_steps)
+    return float(strategy.price_leg(S, leg.K, T, r, leg.q, sigma, leg.opt_type,
+                                    style=leg.style, mode="fast"))
+
+
+def _greeks_at(leg, S, sigma, r, T, today, mode):
+    engine = strategy.REGISTRY[(leg.style, mode)]
+    return engine.greeks(S, leg.K, T, r, leg.q, sigma, leg.opt_type,
+                         divs=leg.divs_df, today=_bd(today))
+
+
+def _account_pnl(legs, equities, beta_map, base_price, curve_pts, today_ts, shock,
+                 mode="truth", n_steps=None) -> float:
+    shifted = _shifted_curve(curve_pts, shock.rate_bps)
+    total = 0.0
+    for lg in legs:
+        beta = beta_map.get(lg.underlying_bbg, DEFAULT_BETA)
+        S, sigma, r, T, t2 = _shocked_inputs(lg, beta, shock, shifted, today_ts)
+        px = _price_at(lg, S, sigma, r, T, t2, mode, n_steps=n_steps)
+        total += lg.qty * lg.multiplier * (px - base_price[lg.position_id])
+    for eq in equities:
+        total += eq["qty"] * eq["spot"] * eq["beta"] * shock.spot_pct / 100.0
+    return total
+
+
+def _truth_price(leg, S, sigma, r, T, today, n_steps=None):
+    n = n_steps or DEFAULT_CRR_STEPS
+    if leg.style == "American":
+        if leg.divs_df is not None and len(leg.divs_df) > 0:
+            return float(american_crr.crr_price(S, leg.K, T, r, sigma, leg.divs_df,
+                                                leg.opt_type, today=_bd(today), n_steps=n))
+        return float(american_crr.crr_price_continuous_q(S, leg.K, T, r, leg.q, sigma,
+                                                         leg.opt_type, n_steps=n))
+    return float(european.price(S, leg.K, T, r, leg.q, sigma, leg.opt_type))
+
+
+def _shocked_rate(leg, shifted_curve, today2, rate_bps) -> float:
+    dte = (pd.Timestamp(leg.expiry) - pd.Timestamp(today2)).days
+    pick = pick_rate_for_dte(shifted_curve, dte)
+    if pick and pick.get("rate") is not None:
+        return pick["rate"]
+    return leg.r + rate_bps / 10000.0
+
+
+def _shifted_curve(curve, rate_bps):
+    if not rate_bps or not curve:
+        return curve
+    d = rate_bps / 10000.0
+    return [{**pt, "rate": (pt["rate"] + d) if pt.get("rate") is not None else None}
+            for pt in curve]
+
+
+# --------------------------------------------------------------------------
+# Target selection (account / position / structure)
+# --------------------------------------------------------------------------
+def _select(state, account_state, target, today_ts):
+    legs = [lg for lg in build_engine_legs(state, account_state, today=today_ts) if lg.priceable]
+    equities = _equity_legs(account_state, _beta_map(account_state))
+    pids = _target_position_ids(account_state, target)
+    if pids is None:
+        return legs, equities
+    return ([lg for lg in legs if lg.position_id in pids],
+            [eq for eq in equities if eq["bbg"] in pids])
+
+
+def _target_position_ids(account_state, target):
+    if not target:
+        return None
+    if isinstance(target, str):
+        return {target}
+    kind, tid = target.get("kind"), target.get("id")
+    if kind in (None, "account") or tid is None:
+        return None
+    if kind == "structure":
+        for st in getattr(account_state, "structures", []) or []:
+            if getattr(st, "structure_id", None) == tid:
+                return {getattr(lg, "position_id", None) for lg in getattr(st, "legs", [])}
+        return set()
+    return {tid}
+
+
+def _structure_of(account_state, pid):
+    for st in getattr(account_state, "structures", []) or []:
+        for lg in getattr(st, "legs", []):
+            if getattr(lg, "position_id", None) == pid:
+                return getattr(st, "structure_id", None)
+    return None
+
+
+def _leg_label(leg) -> str:
+    und = (leg.underlying_bbg or "").split(" ")[0] or leg.underlying_bbg or "?"
+    k = f"{leg.K:g}" if leg.K is not None else "?"
+    exp = leg.expiry.strftime("%b-%y") if leg.expiry else ""
+    return f"{und} {leg.opt_type[0] if leg.opt_type else '?'}{k} {exp}".strip()
+
+
+# --------------------------------------------------------------------------
+# v1 P&L curve (kept; the heatmap replaces it in the section)
 # --------------------------------------------------------------------------
 def _portfolio_curve(legs, equities, beta_map, scenarios, today_ts) -> dict:
     grid = np.linspace(-CURVE_SPAN_PCT, CURVE_SPAN_PCT, CURVE_POINTS)
@@ -238,16 +393,13 @@ def _portfolio_curve(legs, equities, beta_map, scenarios, today_ts) -> dict:
         beta = beta_map.get(lg.underlying_bbg, DEFAULT_BETA)
         s_arr = lg.spot * (1.0 + beta * grid / 100.0)
         p = np.asarray(strategy.price_leg(s_arr, lg.K, lg.T, lg.r, lg.q, lg.sigma,
-                                          lg.opt_type, style=lg.style, mode="fast"),
-                       dtype=float)
+                                          lg.opt_type, style=lg.style, mode="fast"), dtype=float)
         p0 = float(strategy.price_leg(lg.spot, lg.K, lg.T, lg.r, lg.q, lg.sigma,
                                       lg.opt_type, style=lg.style, mode="fast"))
         pnl += lg.qty * lg.multiplier * (p - p0)
     for eq in equities:
         pnl += eq["qty"] * eq["spot"] * eq["beta"] * grid / 100.0
 
-    # CRR confidence band: the pure-spot market scenarios are truth points at known
-    # SPX moves; the gap to the fast curve at those moves is the BS2002-vs-CRR band.
     truth_x, truth_pnl = [], []
     by_name = {s.name: s for s in scenarios}
     for nm in _MARKET_BAND_SHOCKS:
@@ -256,22 +408,14 @@ def _portfolio_curve(legs, equities, beta_map, scenarios, today_ts) -> dict:
             truth_x.append(s.axes.get("spot_pct", 0.0))
             truth_pnl.append(s.pnl)
     band = _band_halfwidth(grid, pnl, truth_x, truth_pnl)
-
-    return {
-        "x_pct": grid.tolist(),
-        "pnl": pnl.tolist(),
-        "band_lo": (pnl - band).tolist(),
-        "band_hi": (pnl + band).tolist(),
-        "truth_x": truth_x,
-        "truth_pnl": truth_pnl,
-        "breakevens": _zero_crossings(grid, pnl),
-        "x_label": "SPX move %", "pricer": "fast vectorized BS2002",
-    }
+    return {"x_pct": grid.tolist(), "pnl": pnl.tolist(),
+            "band_lo": (pnl - band).tolist(), "band_hi": (pnl + band).tolist(),
+            "truth_x": truth_x, "truth_pnl": truth_pnl,
+            "breakevens": _zero_crossings(grid, pnl),
+            "x_label": "SPX move %", "pricer": "fast vectorized BS2002"}
 
 
 def _band_halfwidth(grid, pnl_fast, truth_x, truth_pnl) -> np.ndarray:
-    """A spot-varying band: |truth - fast| at the market points, interpolated onto
-    the grid (0 where there is no anchor)."""
     if not truth_x:
         return np.zeros_like(grid)
     fast_at = np.interp(truth_x, grid, pnl_fast)
@@ -287,39 +431,9 @@ def _zero_crossings(grid, pnl) -> list:
             if pnl[i] != pnl[i - 1]:
                 t = -pnl[i - 1] / (pnl[i] - pnl[i - 1])
                 x = float(grid[i - 1] + t * (grid[i] - grid[i - 1]))
-                if not out or abs(x - out[-1]) > 1e-6:   # dedupe a point sitting on zero
+                if not out or abs(x - out[-1]) > 1e-6:
                     out.append(x)
     return out
-
-
-# --------------------------------------------------------------------------
-# Truth pricing router (today-aware -- price_leg/price() lack a `today` param, so
-# the time shock's discrete-div re-anchoring routes through the CRR core directly).
-# --------------------------------------------------------------------------
-def _truth_price(leg: EngineLeg, S, sigma, r, T, today) -> float:
-    if leg.style == "American":
-        if leg.divs_df is not None and len(leg.divs_df) > 0:
-            return float(american_crr.crr_price(S, leg.K, T, r, sigma, leg.divs_df,
-                                                leg.opt_type, today=pd.Timestamp(today)))
-        return float(american_crr.crr_price_continuous_q(S, leg.K, T, r, leg.q, sigma,
-                                                         leg.opt_type))
-    return float(european.price(S, leg.K, T, r, leg.q, sigma, leg.opt_type))
-
-
-def _shocked_rate(leg, shifted_curve, today2, rate_bps) -> float:
-    dte = (pd.Timestamp(leg.expiry) - today2).days
-    pick = pick_rate_for_dte(shifted_curve, dte)
-    if pick and pick.get("rate") is not None:
-        return pick["rate"]
-    return leg.r + rate_bps / 10000.0          # fallback: shift the leg's base rate
-
-
-def _shifted_curve(curve, rate_bps):
-    if not rate_bps or not curve:
-        return curve
-    d = rate_bps / 10000.0
-    return [{**pt, "rate": (pt["rate"] + d) if pt.get("rate") is not None else None}
-            for pt in curve]
 
 
 # --------------------------------------------------------------------------

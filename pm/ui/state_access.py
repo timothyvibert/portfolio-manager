@@ -115,6 +115,39 @@ def reload_state(reuse_extract: bool = False) -> Optional[PortfolioState]:
     return new_state
 
 
+def price_scenario(
+    account: str, *, spot_pct: float = 0.0, vol_pts: float = 0.0,
+    rate_bps: float = 0.0, time_days: int = 0, target=None, mode: str = "fast",
+) -> Optional[dict]:
+    """The one sanctioned scenario recompute (the live dial). Reprices the account's
+    book over a co-moving shock — spot (beta-mapped) / vol pts / rate bps / time —
+    purely over already-loaded state: **no Bloomberg, no reload, and (unlike
+    ``resolve_structure``) no write-back to ``_RUNTIME``** — a hypothetical must not
+    mutate owned state. Returns ``{account, positions[], grid}`` or None.
+
+    ``mode='fast'`` (vectorized BS2002) drives the live dial + heatmap grid;
+    ``mode='truth'`` (CRR) is for a committed point. The spot×vol grid is always fast
+    — a sweep is never priced at truth.
+    """
+    state = _RUNTIME.get("state")
+    if state is None:
+        return None
+    acc = state.accounts.get(account)
+    if acc is None:
+        return None
+    from pm.risk.scenario import ShockSpec, shock_reprice, spot_vol_grid
+    shock = ShockSpec(name="custom", label="custom", spot_pct=spot_pct, vol_pts=vol_pts,
+                      rate_bps=rate_bps, time_days=int(time_days))
+    impact = shock_reprice(state, acc, shock, target=target, mode=mode)
+    grid = spot_vol_grid(state, acc, rate_bps=rate_bps, time_days=int(time_days), target=target)
+    return {
+        "account": {"pnl": impact["account_pnl"], "pnl_pct": impact["account_pnl_pct"],
+                    "axes": shock.axes(), "mode": mode, "target": target},
+        "positions": impact["rows"],
+        "grid": grid,
+    }
+
+
 def resolve_structure(
     account: str, structure_id: str, resolution: str,
     chosen_type: Optional[str] = None, edited_legs: Optional[list] = None,
