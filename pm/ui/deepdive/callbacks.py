@@ -19,6 +19,7 @@ from pm.ui.deepdive.header import account_options, default_account
 from pm.ui.deepdive.layout import render_deepdive_sections
 from pm.ui.deepdive.positions import build_positions_rows, render_positions_section
 from pm.ui.deepdive.structures_panel import build_structure_rows, render_structure_detail
+from pm.ui.drawers.payoff import render_payoff
 
 _DD_HOST_IDS = [
     "deepdive-kpi", "deepdive-positions", "deepdive-exposure",
@@ -237,6 +238,14 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
                 ex.remove(sid) if sid in ex else ex.append(sid)
                 rows = build_structure_rows(acc_state, state, ex)
                 return no_update, no_update, no_update, ex, rows
+            if prefix == "structure":
+                # M3: the parent structure row opens the payoff drill-in (economics +
+                # scenario, structure-aware). Resolution (Confirm/Reject/Choose) stays on
+                # the structure-detail modal, reachable from the contention/leg/sub rows.
+                body = render_payoff(account, structure_id=sid)
+                return (body, _OPEN_CLS,
+                        {"view": "payoff", "account": account, "structure_id": sid},
+                        no_update, no_update)
             body = render_structure_detail(account, sid, state)
             return (body, _OPEN_CLS,
                     {"view": "structure", "account": account, "structure_id": sid},
@@ -316,3 +325,32 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
         if not isinstance(trig, dict) or not (ctx.triggered[0] if ctx.triggered else {}).get("value"):
             return no_update
         return trig.get("id")
+
+    # ---- Click an impact row -> ALSO open that position's payoff drawer --------
+    # Additive to _scn_drill (which retargets the heatmap surface): the same click opens
+    # the payoff drill-in for that leg, on the underlying's own axis. The row id is a
+    # position_id (options) or an equity bbg_ticker — resolve either to a position.
+    @app.callback(
+        Output("drawer-body", "children", allow_duplicate=True),
+        Output("drawer-root", "className", allow_duplicate=True),
+        Output("drawer-state", "data", allow_duplicate=True),
+        Input({"type": "scn-drill", "id": ALL}, "n_clicks"),
+        State("deepdive-account-picker", "value"),
+        prevent_initial_call=True,
+    )
+    def _scn_open_payoff(_clicks, picker):
+        trig = ctx.triggered_id
+        if not isinstance(trig, dict) or not (ctx.triggered[0] if ctx.triggered else {}).get("value"):
+            return no_update, no_update, no_update
+        state = sa.get_state()
+        acct = _resolve_account(state, picker)
+        if state is None or acct is None:
+            return no_update, no_update, no_update
+        acc = state.accounts.get(acct)
+        rid = trig.get("id")
+        pos = (next((p for p in acc.positions if p.position_id == rid), None)
+               or next((p for p in acc.positions if p.bbg_ticker == rid), None))
+        if pos is None:
+            return no_update, no_update, no_update
+        body = render_payoff(acct, position_id=pos.position_id)
+        return body, _OPEN_CLS, {"view": "payoff", "account": acct, "position_id": pos.position_id}
