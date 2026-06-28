@@ -1392,6 +1392,58 @@ html, body {
     .scenario-attrib-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* ---- Scenario interactive section (controls row over heatmap | impact table) ---- */
+.scn-controls {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 20px;
+    padding: 6px 4px 12px; border-bottom: 1px solid var(--pm-grey-100); margin-bottom: 10px;
+}
+.scn-ctrl { flex: 1 1 180px; min-width: 150px; }
+.scn-ctrl-narrow { flex: 0 0 auto; min-width: 0; }
+.scn-ctrl-lbl {
+    display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--pm-grey-500); margin-bottom: 2px;
+}
+.scn-radio { display: inline-flex; gap: 10px; font-size: 12px; align-items: center; }
+.scn-target { min-width: 170px; font-size: 12px; }
+.scn-presets { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.scn-chip {
+    font-size: 11px; padding: 3px 9px; border: 1px solid var(--pm-grey-300);
+    background: white; color: var(--pm-charcoal); border-radius: 12px; cursor: pointer;
+    font-family: var(--font-stack);
+}
+.scn-chip:hover { background: var(--pm-grey-50); border-color: var(--pm-accent); }
+.scn-chip-reset { color: var(--pm-grey-500); }
+.scn-body { display: flex; gap: 16px; align-items: flex-start; }
+.scn-heatmap-wrap { flex: 1 1 58%; min-width: 0; }
+.scn-impact-wrap { flex: 1 1 42%; min-width: 0; max-height: 400px; overflow: auto; }
+.scn-impact-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.scn-impact-head th {
+    text-align: right; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--pm-grey-500); padding: 4px 6px; border-bottom: 1px solid var(--pm-grey-300);
+    position: sticky; top: 0; background: white;
+}
+.scn-impact-head th:first-child { text-align: left; }
+.scn-impact-row { cursor: pointer; border-bottom: 1px solid var(--pm-grey-100); }
+.scn-impact-row:hover { background: var(--pm-grey-50); }
+.scn-impact-active { background: var(--pm-urgent-bg); }
+.scn-impact-name { text-align: left; color: var(--pm-charcoal); white-space: nowrap; }
+.scn-impact-num {
+    text-align: right; font-family: "Consolas", monospace; font-variant-numeric: tabular-nums;
+    color: var(--pm-grey-700); padding: 3px 6px;
+}
+.scn-total {
+    display: flex; justify-content: space-between; align-items: baseline; margin-top: 8px;
+    padding-top: 6px; border-top: 2px solid var(--pm-grey-300);
+}
+.scn-total-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--pm-grey-700); }
+.scn-total-val { font-family: "Consolas", monospace; font-weight: 700; font-size: 14px; }
+.scn-total-val.scenario-pos { color: var(--pos); }
+.scn-total-val.scenario-neg { color: var(--neg); }
+@media (max-width: 1100px) {
+    .scn-body { flex-direction: column; }
+    .scn-heatmap-wrap, .scn-impact-wrap { flex-basis: auto; width: 100%; }
+}
+
 /* Horizontal bar lists (sector / concentration) — CSS only, no chart dep */
 .dd-bars { display: flex; flex-direction: column; gap: 5px; }
 .dd-bar-row {

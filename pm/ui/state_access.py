@@ -138,7 +138,9 @@ def price_scenario(
     from pm.risk.scenario import ShockSpec, shock_reprice, spot_vol_grid
     shock = ShockSpec(name="custom", label="custom", spot_pct=spot_pct, vol_pts=vol_pts,
                       rate_bps=rate_bps, time_days=int(time_days))
-    impact = shock_reprice(state, acc, shock, target=target, mode=mode)
+    # The impact table is always the full book (every position's P&L under the shock);
+    # ``target`` drills only the heatmap surface, never the table.
+    impact = shock_reprice(state, acc, shock, mode=mode)
     grid = spot_vol_grid(state, acc, rate_bps=rate_bps, time_days=int(time_days), target=target)
     return {
         "account": {"pnl": impact["account_pnl"], "pnl_pct": impact["account_pnl_pct"],

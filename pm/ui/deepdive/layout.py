@@ -46,7 +46,7 @@ def render_deepdive_sections(state: Optional[PortfolioState], account: Optional[
         "deepdive-kpi": render_kpis(acc_state),
         "deepdive-positions": render_positions_section(acc_state, state, pos_view, expanded_sids),
         "deepdive-exposure": render_exposure_section(acc_state),
-        "deepdive-scenario": render_scenario_section(acc_state),
+        "deepdive-scenario": render_scenario_section(acc_state, state),
         "deepdive-analytics": render_analytics_section(acc_state),
         "deepdive-trades": render_trades_section(acc_state),
     }
@@ -64,8 +64,10 @@ def render_deepdive_tab(state: Optional[PortfolioState]) -> html.Div:
         html.Div(id="deepdive-kpi", className="dd-kpi-host",
                  children=sections["deepdive-kpi"]),
         html.Div(id="deepdive-positions", children=sections["deepdive-positions"]),
+        html.Div(id="deepdive-analytics", children=sections["deepdive-analytics"]),
         html.Div(id="deepdive-exposure", children=sections["deepdive-exposure"]),
         html.Div(id="deepdive-scenario", children=sections["deepdive-scenario"]),
-        html.Div(id="deepdive-analytics", children=sections["deepdive-analytics"]),
+        # Reserved: trade-history insights (Arc 3) — slot kept, not built here.
+        html.Div(id="deepdive-trade-insights"),
         html.Div(id="deepdive-trades", children=sections["deepdive-trades"]),
     ])

@@ -43,6 +43,22 @@ def _resolve_account(state, picker_value):
     return default_account(state)
 
 
+def _scn_target(state, acct, target):
+    """Map the scenario Target value -> (price_scenario target arg, heatmap label)."""
+    if not target or target == "account":
+        return None, "Account"
+    if isinstance(target, str) and target.startswith("structure:"):
+        sid = target.split(":", 1)[1]
+        acc = state.accounts.get(acct) if state else None
+        label = "Structure"
+        for st in (getattr(acc, "structures", []) or []):
+            if getattr(st, "structure_id", None) == sid:
+                label = getattr(st, "type", "structure")
+                break
+        return {"kind": "structure", "id": sid}, label
+    return {"kind": "position", "id": target}, str(target)
+
+
 def _ids_from_cell(cell):
     """(account, position_id, underlying) from a grid cellClicked event. Prefers
     the row ``data`` (carries the hidden keys); falls back to parsing rowId
@@ -238,3 +254,65 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
                 {"view": view, "account": account, "position_id": position_id,
                  "underlying": underlying, "source": "deepdive-positions"},
                 no_update, no_update)
+
+    # ---- Scenario: live dial / preset / drill -> price_scenario recompute ----
+    # The one sanctioned recompute (read-only, no BBG/reload). Any control change
+    # reprices the book fast (BS2002) and repaints the heatmap + impact table.
+    @app.callback(
+        Output("scn-heatmap", "figure"),
+        Output("scn-impact", "children"),
+        Output("scn-total", "children"),
+        Input("scn-spx", "value"),
+        Input("scn-vol", "value"),
+        Input("scn-rate", "value"),
+        Input("scn-time", "value"),
+        Input("scn-target", "value"),
+        State("deepdive-account-picker", "value"),
+        prevent_initial_call=True,
+    )
+    def _scn_recompute(spx, vol, rate, time_days, target, picker):
+        state = sa.get_state()
+        acct = _resolve_account(state, picker)
+        if state is None or acct is None:
+            return no_update, no_update, no_update
+        tgt, tlabel = _scn_target(state, acct, target)
+        out = sa.price_scenario(acct, spot_pct=spx or 0, vol_pts=vol or 0,
+                                rate_bps=rate or 0, time_days=int(time_days or 0),
+                                target=tgt, mode="fast")
+        if out is None:
+            return no_update, no_update, no_update
+        from pm.ui.deepdive.scenario import _heatmap_fig, _impact_table, _total_line
+        fig = _heatmap_fig(out["grid"], spx or 0, vol or 0, target_label=tlabel)
+        table = _impact_table(out["positions"], target)
+        total = _total_line({"account_pnl": out["account"]["pnl"],
+                             "account_pnl_pct": out["account"]["pnl_pct"]})
+        return fig, table, total
+
+    # ---- Preset chips set the controls (which then drive the recompute) ------
+    @app.callback(
+        Output("scn-spx", "value"),
+        Output("scn-vol", "value"),
+        Output("scn-rate", "value"),
+        Output("scn-time", "value"),
+        Input({"type": "scn-preset", "name": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _scn_preset(_clicks):
+        trig = ctx.triggered_id
+        if not isinstance(trig, dict) or not (ctx.triggered[0] if ctx.triggered else {}).get("value"):
+            return no_update, no_update, no_update, no_update
+        from pm.ui.deepdive.scenario import PRESET_AXES
+        sp, vp, rb, td = PRESET_AXES.get(trig.get("name"), (0.0, 0.0, 0.0, 0))
+        return sp, vp, rb, td
+
+    # ---- Click an impact row -> drill the heatmap to that position ----------
+    @app.callback(
+        Output("scn-target", "value"),
+        Input({"type": "scn-drill", "id": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _scn_drill(_clicks):
+        trig = ctx.triggered_id
+        if not isinstance(trig, dict) or not (ctx.triggered[0] if ctx.triggered else {}).get("value"):
+            return no_update
+        return trig.get("id")
