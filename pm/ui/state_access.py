@@ -150,6 +150,33 @@ def price_scenario(
     }
 
 
+def price_payoff(
+    account: str, *, structure_id: Optional[str] = None,
+    position_id: Optional[str] = None, shock: Optional[dict] = None,
+):
+    """The structure/position-level read-only payoff recompute — the payoff drawer's
+    live dial, the per-level analogue of ``price_scenario``. Looks up the target (a
+    structure by id, else a standalone position) in the loaded state and returns its
+    ``PayoffResult``. Read-only: **no Bloomberg, no reload, no ``_RUNTIME`` write-back**
+    — a hypothetical must not mutate owned state. None if the state/account/target is
+    missing. ``shock`` is ``{spot_pct, vol_pts, rate_bps, time_days}`` (None = base)."""
+    state = _RUNTIME.get("state")
+    if state is None:
+        return None
+    acc = state.accounts.get(account)
+    if acc is None:
+        return None
+    target = None
+    if structure_id:
+        target = next((s for s in (acc.structures or []) if s.structure_id == structure_id), None)
+    elif position_id:
+        target = next((p for p in acc.positions if p.position_id == position_id), None)
+    if target is None:
+        return None
+    from pm.risk.payoff import structure_payoff
+    return structure_payoff(state, acc, target, shock=shock)
+
+
 def resolve_structure(
     account: str, structure_id: str, resolution: str,
     chosen_type: Optional[str] = None, edited_legs: Optional[list] = None,

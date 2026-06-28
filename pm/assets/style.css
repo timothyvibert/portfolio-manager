@@ -1490,3 +1490,63 @@ html, body {
 @media (max-width: 1100px) {
     .dd-analytics-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- Payoff drawer (panel M2) — economics + scenario on the shared drawer.
+   Reuses the --pm-*/--pos/--neg tokens; the figure is token-styled in payoff.py. ---- */
+.payoff-content { display: flex; flex-direction: column; gap: 12px; }
+.payoff-identity {
+    font-size: 16px; font-weight: 600; color: var(--pm-charcoal);
+    padding-bottom: 8px; border-bottom: 2px solid var(--pm-charcoal);
+}
+.payoff-empty { color: var(--pm-grey-500); padding: 24px; }
+.payoff-pos { color: var(--pos); }
+.payoff-neg { color: var(--neg); }
+
+.payoff-dial {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 22px;
+    padding: 6px 4px 14px; border-bottom: 1px solid var(--pm-grey-100);
+}
+.payoff-ctrl { flex: 1 1 180px; min-width: 150px; }
+.payoff-ctrl-narrow { flex: 0 0 auto; }
+.payoff-ctrl-lbl {
+    display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--pm-grey-500); margin-bottom: 2px;
+}
+.payoff-radio { display: inline-flex; gap: 10px; font-size: 12px; align-items: center; }
+
+.payoff-body { display: flex; gap: 18px; align-items: flex-start; }
+.payoff-graph-wrap { flex: 1 1 60%; min-width: 0; }
+.payoff-graph { width: 100%; }
+.payoff-side { flex: 1 1 40%; min-width: 220px; display: flex; flex-direction: column; gap: 16px; }
+
+.payoff-block-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--pm-grey-700); margin: 0 0 8px 0;
+}
+.payoff-stats { display: flex; flex-direction: column; gap: 4px; }
+.payoff-stat {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12.5px; border-bottom: 1px solid var(--pm-grey-100); padding: 3px 0;
+}
+.payoff-stat-lbl { color: var(--pm-grey-700); }
+.payoff-stat-val {
+    font-family: "Consolas", monospace; font-variant-numeric: tabular-nums;
+    color: var(--pm-charcoal); font-weight: 600;
+}
+.payoff-greeks-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.payoff-greeks-table th {
+    text-align: right; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--pm-grey-500); padding: 3px 6px; border-bottom: 1px solid var(--pm-grey-300);
+}
+.payoff-greeks-table th:first-child { text-align: left; }
+.payoff-greek-lbl { color: var(--pm-grey-700); padding: 3px 6px; }
+.payoff-greek-num {
+    text-align: right; font-family: "Consolas", monospace; font-variant-numeric: tabular-nums;
+    color: var(--pm-charcoal); padding: 3px 6px;
+}
+.payoff-caveat { font-size: 11px; color: var(--pm-grey-500); font-style: italic; margin-top: 6px; }
+.payoff-caption { font-size: 11px; color: var(--pm-grey-500); line-height: 1.5; }
+@media (max-width: 1000px) {
+    .payoff-body { flex-direction: column; }
+    .payoff-graph-wrap, .payoff-side { flex-basis: auto; width: 100%; }
+}
