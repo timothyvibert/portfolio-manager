@@ -1348,6 +1348,31 @@ html, body {
 .exposure-row-contention .exposure-label { font-style: italic; font-weight: 500; }
 .exposure-degraded-mark { color: var(--pm-urgent); font-weight: 700; }
 
+/* Rollup accordion (item 6) — native <details>/<summary>, no callback. The Account
+   total stays visible in the summary; the per-structure rows collapse away by
+   default to reclaim the vertical space. */
+.exposure-rollup-details > .exposure-table { margin-top: 8px; }
+.exposure-rollup-summary {
+    cursor: pointer; list-style: none;
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px;
+    padding: 6px 8px; background: var(--pm-grey-50); border-radius: 3px;
+}
+.exposure-rollup-summary::-webkit-details-marker { display: none; }
+.exposure-rollup-summary::marker { content: ""; }
+.exposure-rollup-summary:hover { background: var(--pm-grey-100); }
+.exposure-rollup-details[open] > .exposure-rollup-summary { background: var(--pm-grey-100); }
+.exposure-rollup-acct { font-weight: 700; color: var(--pm-charcoal); }
+.exposure-rollup-stat { display: inline-flex; align-items: baseline; gap: 5px; font-size: 12.5px; }
+.exposure-rollup-stat-lbl {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--pm-grey-500);
+}
+.exposure-rollup-toggle {
+    margin-left: auto; font-size: 11px; color: var(--pm-grey-500); white-space: nowrap;
+}
+.exposure-rollup-details[open] .exposure-rollup-toggle { color: var(--pm-grey-700); }
+.exposure-rollup-caret { display: inline-block; transition: transform 0.12s ease; }
+.exposure-rollup-details[open] .exposure-rollup-caret { transform: rotate(180deg); }
+
 /* ---- Scenario / stress section (rung 2) — reuses the --pm-* / --pos / --neg
    token set; no new palette. The stress table uses native <details> for
    callback-free on-expand attribution. ---- */
@@ -1456,6 +1481,10 @@ html, body {
 }
 .dd-bar-track { height: 8px; background: var(--pm-grey-100); border-radius: 2px; overflow: hidden; }
 .dd-bar-fill { height: 100%; background: var(--pm-charcoal); }
+/* A net-short (negative economic-exposure) name/sector tints the bar red so the
+   shorts/CSPs the old stock-MV basis hid now read at a glance. Same --neg token the
+   exposure numbers use; positive (long) exposure stays neutral charcoal. */
+.dd-bar-fill-neg { background: var(--neg); }
 .dd-bar-val { text-align: right; font-family: "Consolas", monospace; color: var(--pm-grey-700); }
 
 @media (max-width: 1100px) {

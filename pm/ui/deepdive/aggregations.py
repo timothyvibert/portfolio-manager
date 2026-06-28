@@ -239,34 +239,9 @@ def expiry_ladder(account_state, as_of: Optional[date] = None) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Supporting aggregations (concentration + book glance) — also pure/tested.
-# Diagnostics exposes sector + beta but NOT concentration, so we derive it
-# from positions the same way the blotter derives % NAV.
+# Supporting aggregation (book glance) — pure/tested. Top-N concentration now lives
+# in pm.risk.exposure on the economic (delta-$) basis (option-aware), not stock MV.
 # ---------------------------------------------------------------------------
-
-def top_concentrations(account_state, n: int = 5) -> list[dict]:
-    """The ``n`` largest positions by ``|market_value| / |nav|``, descending.
-
-    Returns dicts with symbol/underlying/asset_class/market_value/pct_nav —
-    the renderer formats the label. Cash is included (it's a real book weight).
-    """
-    nav = abs(_coerce_float(getattr(account_state, "nav", None)) or 0.0)
-    rows = []
-    for p in getattr(account_state, "positions", []) or []:
-        mv = _coerce_float(getattr(p, "market_value", None))
-        if mv is None:
-            continue
-        pct = (abs(mv) / nav) if nav else None
-        rows.append({
-            "symbol": getattr(p, "symbol", None),
-            "underlying": getattr(p, "underlying_symbol", None) or getattr(p, "symbol", None),
-            "asset_class": getattr(p, "asset_class", None),
-            "market_value": mv,
-            "pct_nav": pct,
-        })
-    rows.sort(key=lambda r: abs(r["market_value"]), reverse=True)
-    return rows[:n]
-
 
 def book_summary(account_state) -> dict:
     """One-glance book counts for the KPI strip: nav, cash %, # positions,

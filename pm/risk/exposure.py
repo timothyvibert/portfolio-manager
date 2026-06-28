@@ -45,6 +45,11 @@ from pm.insight.structures import reconcile_allocations
 BETA_FIELD_ADJUSTED = "EQY_BETA"       # SPX 2y weekly, adjusted (exposure default)
 BETA_FIELD_RAW = "EQY_RAW_BETA"        # SPX 2y weekly, raw
 
+# GICS sector, read from the same underlying snapshot for the option-aware sector
+# breakdown (Analytics). The same field the legacy stock-MV sector diagnostic reads,
+# so the two bases line up name-for-name.
+SECTOR_FIELD = "GICS_SECTOR_NAME"
+
 # Vega tenor buckets — deliberately finer and term-structure-shaped, NOT the
 # expiry-ladder's strike-obligation buckets (≤30/31-60/61-90/>90d): vega is a
 # vol-term-structure exposure, and the ladder's single >90d bucket would collapse
@@ -140,10 +145,10 @@ def _num(v) -> Optional[float]:
         return None
 
 
-def _beta_lookup(underlyings, ticker: Optional[str], field_name: str) -> Optional[float]:
-    """Beta for one underlying from the snapshot, by ticker + field name. Returns
-    None when the snapshot is absent, the name isn't in it, the field is missing, or
-    the value is non-numeric — never raises, never substitutes 0."""
+def _cell_lookup(underlyings, ticker: Optional[str], field_name: str):
+    """Raw snapshot cell for (ticker, field_name), or None when the snapshot is
+    absent, the name isn't in it, or the field is missing — never raises. Shared by
+    the beta lookup (numeric) and the sector lookup (string)."""
     if underlyings is None or not ticker:
         return None
     try:
@@ -157,7 +162,30 @@ def _beta_lookup(underlyings, ticker: Optional[str], field_name: str) -> Optiona
     # A duplicated index yields a Series — take the first row defensively.
     if hasattr(val, "iloc"):
         val = val.iloc[0] if len(val) else None
-    return _num(val)
+    return val
+
+
+def _beta_lookup(underlyings, ticker: Optional[str], field_name: str) -> Optional[float]:
+    """Beta for one underlying from the snapshot, by ticker + field name. None when
+    the snapshot is absent, the name isn't in it, the field is missing, or the value
+    is non-numeric — never raises, never substitutes 0."""
+    return _num(_cell_lookup(underlyings, ticker, field_name))
+
+
+def _sector_of(underlyings, ticker: Optional[str]) -> str:
+    """GICS sector for one underlying — 'Unclassified' when the snapshot/name/field
+    is absent or blank. Mirrors the diagnostics fallback so the two bases never
+    disagree on a name's sector."""
+    val = _cell_lookup(underlyings, ticker, SECTOR_FIELD)
+    if val is None:
+        return "Unclassified"
+    try:
+        if pd.isna(val):
+            return "Unclassified"
+    except (TypeError, ValueError):
+        pass
+    s = str(val).strip()
+    return s or "Unclassified"
 
 
 def _new_acc() -> dict:
@@ -407,4 +435,103 @@ def run_account_exposure(state) -> None:
     stored view."""
     for acc in state.accounts.values():
         acc.exposure = compute_account_exposure(acc)
+
+
+# ---------------------------------------------------------------------------
+# Economic-exposure breakdowns (per-name, per-sector) — the option-aware basis for
+# the Analytics sector + concentration cards. Same delta-$ economic exposure as the
+# rollup, just sliced by underlying / GICS sector instead of by structure. Pure reads
+# of greeks.by_position (+ the underlying snapshot for sector / NAV for the %),
+# conserved: Σ over names == Σ over sectors == the account's net dollar-delta.
+# ---------------------------------------------------------------------------
+
+def _iter_greek_rows(account_state):
+    """Yield the per-position greek rows (Series) from ``greeks.by_position`` — empty
+    when no greeks were computed."""
+    greeks = getattr(account_state, "greeks", None)
+    by_position = getattr(greeks, "by_position", None)
+    if by_position is None or getattr(by_position, "empty", True):
+        return
+    for _, r in by_position.iterrows():
+        yield r
+
+
+def _symbol_by_underlying(account_state) -> dict:
+    """Map an underlying bbg-ticker → a short display symbol, taken from the positions
+    (option legs carry ``underlying_symbol``; equity/fund carry ``symbol``)."""
+    out: dict = {}
+    for p in getattr(account_state, "positions", []) or []:
+        ac = getattr(p, "asset_class", None)
+        if ac == "option":
+            ut, sym = getattr(p, "underlying_bbg_ticker", None), getattr(p, "underlying_symbol", None)
+        elif ac in ("equity", "fund_etf"):
+            ut, sym = getattr(p, "bbg_ticker", None), getattr(p, "symbol", None)
+        else:
+            continue
+        if ut and sym and ut not in out:
+            out[ut] = sym
+    return out
+
+
+def _short_name(ticker: Optional[str]) -> str:
+    """Fallback display name from a bbg ticker: 'AAPL US Equity' → 'AAPL'."""
+    if not ticker:
+        return "—"
+    return str(ticker).split(" ")[0]
+
+
+def economic_exposure_by_underlying(account_state) -> list[dict]:
+    """Per-underlying net economic exposure — Σ ``dollar_delta`` over a name's stock +
+    option legs — descending by magnitude. Each dict: ``underlying_ticker``,
+    ``symbol`` (short display name), ``dollar_delta`` (signed delta-$), ``pct_nav``
+    (signed delta-$ ÷ |NAV|, None when NAV is absent/zero).
+
+    Conserved: Σ ``dollar_delta`` == the account's net dollar-delta
+    (== ``AccountExposure.economic_exposure``). Options are **netted against stock**,
+    so a covered call's name shows below its stock market value and a standalone short
+    call / CSP shows negative — the whole point of the economic basis. Pure read of
+    ``greeks.by_position`` + ``positions`` — no Bloomberg, no recompute."""
+    nav = abs(_num(getattr(account_state, "nav", None)) or 0.0)
+    sym_by_ut = _symbol_by_underlying(account_state)
+    sums: dict = {}
+    for r in _iter_greek_rows(account_state):
+        dd = _num(r.get("dollar_delta"))
+        if dd is None:
+            continue
+        ut = r.get("underlying_ticker")
+        sums[ut] = sums.get(ut, 0.0) + dd
+    out = [{
+        "underlying_ticker": ut,
+        "symbol": sym_by_ut.get(ut) or _short_name(ut),
+        "dollar_delta": dd,
+        "pct_nav": (dd / nav) if nav else None,
+    } for ut, dd in sums.items()]
+    out.sort(key=lambda d: abs(d["dollar_delta"]), reverse=True)
+    return out
+
+
+def economic_exposure_by_sector(account_state) -> list[dict]:
+    """Per-GICS-sector net economic exposure — Σ ``dollar_delta`` of the names in each
+    sector — descending by magnitude. Each dict: ``sector``, ``dollar_delta`` (signed
+    delta-$), ``pct_nav`` (signed delta-$ ÷ |NAV|).
+
+    Same conserved delta-$ basis as :func:`economic_exposure_by_underlying`; a name
+    with no GICS sector rolls into 'Unclassified'. Unlike the legacy stock-MV sector
+    diagnostic, **options are included and netted** — a short call/put reduces (or
+    flips) its sector's exposure rather than vanishing. Pure read of
+    ``greeks.by_position`` + the underlying snapshot."""
+    nav = abs(_num(getattr(account_state, "nav", None)) or 0.0)
+    snapshot = getattr(account_state, "snapshot", None)
+    underlyings = getattr(snapshot, "underlyings", None)
+    sums: dict = {}
+    for r in _iter_greek_rows(account_state):
+        dd = _num(r.get("dollar_delta"))
+        if dd is None:
+            continue
+        sector = _sector_of(underlyings, r.get("underlying_ticker"))
+        sums[sector] = sums.get(sector, 0.0) + dd
+    out = [{"sector": s, "dollar_delta": v, "pct_nav": (v / nav) if nav else None}
+           for s, v in sums.items()]
+    out.sort(key=lambda d: abs(d["dollar_delta"]), reverse=True)
+    return out
 

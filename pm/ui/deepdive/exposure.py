@@ -161,6 +161,31 @@ def _rollup_row(node, row_cls: str = "") -> html.Tr:
     return html.Tr(className=cls, children=cells)
 
 
+def _rollup_summary(e) -> html.Summary:
+    """The always-visible accordion header: the bold Account total + the expander.
+    Collapsed, the reader sees the account's net exposure; expanding reveals the
+    per-structure breakdown. Native <details>/<summary> — no callback, no JS."""
+    t = e.total
+    n = len(e.structures)
+
+    def _stat(label, v):
+        return html.Span(className="exposure-rollup-stat", children=[
+            html.Span(label, className="exposure-rollup-stat-lbl"),
+            html.Span(_fmt_money(v), className=_num_cls(v)),
+        ])
+
+    return html.Summary(className="exposure-rollup-summary", children=[
+        html.Span("Account", className="exposure-rollup-acct"),
+        _stat("Net $Δ", t.dollar_delta),
+        _stat("β-$", t.dollar_beta_adjusted),
+        _stat("Net MV", t.market_value),
+        html.Span(className="exposure-rollup-toggle", children=[
+            f"Structure → Account ({n}) ",
+            html.Span("▾", className="exposure-rollup-caret"),
+        ]),
+    ])
+
+
 def _rollup_table(e) -> html.Div:
     head = html.Tr(children=[
         html.Th(name, className="am-th",
@@ -177,11 +202,14 @@ def _rollup_table(e) -> html.Div:
         "Structured + Unstructured = Account."
     return html.Div(className="dd-panel dd-exposure-rollup", children=[
         html.H3("Exposure rollup — structure → account", className="dd-panel-title"),
-        html.Table(className="am-table exposure-table", children=[
-            html.Thead(children=[head]),
-            html.Tbody(children=body),
+        html.Details(open=False, className="exposure-rollup-details", children=[
+            _rollup_summary(e),
+            html.Table(className="am-table exposure-table", children=[
+                html.Thead(children=[head]),
+                html.Tbody(children=body),
+            ]),
+            html.Div(note, className="dd-panel-note"),
         ]),
-        html.Div(note, className="dd-panel-note"),
     ])
 
 
