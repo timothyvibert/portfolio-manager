@@ -118,11 +118,9 @@ def _controls(account_state, rows) -> html.Div:
                                                  _slider("scn-vol", -10, 10, 0.5, "")]),
         html.Div(className="scn-ctrl", children=[html.Label("Rate shift (bps)", className="scn-ctrl-lbl"),
                                                  _slider("scn-rate", -50, 50, 5, "")]),
-        html.Div(className="scn-ctrl scn-ctrl-narrow", children=[
-            html.Label("Time", className="scn-ctrl-lbl"),
-            dcc.RadioItems(id="scn-time", value=0, className="scn-radio",
-                           options=[{"label": "now", "value": 0}, {"label": "+1w", "value": 7},
-                                    {"label": "+1m", "value": 30}])]),
+        html.Div(className="scn-ctrl", children=[
+            html.Label("Time (days fwd)", className="scn-ctrl-lbl"),
+            _slider("scn-time", 0, 90, 1, "d")]),
         html.Div(className="scn-ctrl scn-ctrl-narrow", children=[
             html.Label("Target", className="scn-ctrl-lbl"),
             dcc.Dropdown(id="scn-target", options=targets, value="account", clearable=False,

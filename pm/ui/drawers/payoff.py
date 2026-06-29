@@ -30,6 +30,7 @@ _NEG = "#C62828"
 _GRID = "#E8E8E8"
 _AMBER = "#B7791F"
 _MUTED = "#6E6E6E"
+_GREY3 = "#B5B5B5"
 _FONT = '"Frutiger 45 Light","Frutiger","Helvetica Neue","Segoe UI",Arial,sans-serif'
 
 
@@ -92,7 +93,7 @@ def _y_on(curve, x, s):
         return None
 
 
-def payoff_figure(result):
+def payoff_figure(result, show_components=False):
     import plotly.graph_objects as go          # lazy
 
     x = result.grid
@@ -101,6 +102,20 @@ def payoff_figure(result):
     fig.add_hline(y=0, line=dict(color=_GRID, width=1))
     for k in (result.strikes or []):
         fig.add_vline(x=k, line=dict(color=_MUTED, width=1, dash="dot"))
+    # Component (standalone-vs-net) curves, faint and UNDER the combined line: the
+    # stock leg alone vs the option overlay alone (combined = their sum at every point).
+    # On by default for stock+option overlays (see render_payoff / the dial toggle).
+    if show_components:
+        if result.expiry_curve_stock is not None:
+            fig.add_trace(go.Scatter(
+                x=x, y=result.expiry_curve_stock, mode="lines", name="Stock alone",
+                line=dict(color=_MUTED, width=1.3, dash="dot"),
+                hovertemplate="px %{x:,.2f}<br>stock-alone P&L %{y:$,.0f}<extra></extra>"))
+        if result.expiry_curve_options is not None:
+            fig.add_trace(go.Scatter(
+                x=x, y=result.expiry_curve_options, mode="lines", name="Options alone",
+                line=dict(color=_GREY3, width=1.6, dash="dash"),
+                hovertemplate="px %{x:,.2f}<br>options-alone P&L %{y:$,.0f}<extra></extra>"))
     fig.add_trace(go.Scatter(
         x=x, y=result.expiry_curve, mode="lines", name="At expiry",
         line=dict(color=_CHARCOAL, width=2),
@@ -212,8 +227,19 @@ def _slider(_id, lo, hi, step, val):
                       className="payoff-slider")
 
 
+def _is_overlay(result) -> bool:
+    """True for a stock + option structure (covered call / collar) — where the
+    standalone-vs-net comparison is the point. Drives the component-curve default."""
+    legs = result.legs or []
+    return (any(l.get("is_stock") for l in legs)
+            and any(not l.get("is_stock") for l in legs))
+
+
 def _dial(result, shock) -> html.Div:
     sp = shock or {}
+    dte = result.economics.get("dte")
+    tmax = int(dte) if (dte and dte > 0) else 30   # the drawer can't decay past expiry
+    overlay = _is_overlay(result)
     return html.Div(className="payoff-dial", children=[
         html.Div(className="payoff-ctrl", children=[
             html.Label(f"{result.underlying or 'spot'} move %", className="payoff-ctrl-lbl"),
@@ -224,11 +250,16 @@ def _dial(result, shock) -> html.Div:
         html.Div(className="payoff-ctrl", children=[
             html.Label("Rate shift (bps)", className="payoff-ctrl-lbl"),
             _slider("payoff-rate", -50, 50, 5, sp.get("rate_bps", 0))]),
+        html.Div(className="payoff-ctrl", children=[
+            html.Label("Time to expiry (days)", className="payoff-ctrl-lbl"),
+            _slider("payoff-time", 0, tmax, 1, sp.get("time_days", 0))]),
         html.Div(className="payoff-ctrl payoff-ctrl-narrow", children=[
-            html.Label("Time", className="payoff-ctrl-lbl"),
-            dcc.RadioItems(id="payoff-time", value=sp.get("time_days", 0), className="payoff-radio",
-                           options=[{"label": "now", "value": 0}, {"label": "+1w", "value": 7},
-                                    {"label": "+1m", "value": 30}])]),
+            html.Label("Compare", className="payoff-ctrl-lbl"),
+            dcc.Checklist(id="payoff-components",
+                          options=[{"label": " components", "value": "components",
+                                    "disabled": not overlay}],
+                          value=(["components"] if overlay else []),
+                          className="payoff-check")]),
     ])
 
 
@@ -250,7 +281,8 @@ def render_payoff(account: str, *, structure_id: Optional[str] = None,
         _dial(result, shock),
         html.Div(className="payoff-body", children=[
             html.Div(className="payoff-graph-wrap", children=[
-                dcc.Graph(id="payoff-graph", figure=payoff_figure(result),
+                dcc.Graph(id="payoff-graph",
+                          figure=payoff_figure(result, show_components=_is_overlay(result)),
                           config={"displayModeBar": False, "responsive": True},
                           className="payoff-graph")]),
             html.Div(className="payoff-side", children=[
@@ -276,10 +308,11 @@ def register_payoff_callbacks(app) -> None:
         Input("payoff-vol", "value"),
         Input("payoff-rate", "value"),
         Input("payoff-time", "value"),
+        Input("payoff-components", "value"),
         State("drawer-state", "data"),
         prevent_initial_call=True,
     )
-    def _recompute(spot_pct, vol_pts, rate_bps, time_days, ds):
+    def _recompute(spot_pct, vol_pts, rate_bps, time_days, components, ds):
         if not ds or ds.get("view") != "payoff":
             return no_update, no_update, no_update
         shock = {"spot_pct": spot_pct or 0.0, "vol_pts": vol_pts or 0.0,
@@ -288,4 +321,5 @@ def register_payoff_callbacks(app) -> None:
                               position_id=ds.get("position_id"), shock=shock)
         if res is None:
             return no_update, no_update, no_update
-        return payoff_figure(res), economics_block(res), greeks_block(res)
+        return (payoff_figure(res, show_components=bool(components)),
+                economics_block(res), greeks_block(res))

@@ -120,14 +120,26 @@ def build_structure_columns() -> list[dict]:
          "cellStyle": SIGNED_COLOR_STYLE, "filter": "agNumberColumnFilter"},
         {"field": "net_premium", "headerName": "Net Premium", "width": 124,
          "type": "rightAligned", "valueFormatter": MONEY_FULL_FMT, "filter": "agNumberColumnFilter"},
-        {"field": "t2_pricing", "headerName": "Pricing (T2)", "width": 124,
-         "cellClass": "struct-pending-cell"},
+        {"field": "t2_pricing", "headerName": "Breakeven", "width": 124,
+         "filter": "agTextColumnFilter"},
         {"field": "band", "headerName": "Band", "width": 116, "filter": "agTextColumnFilter"},
         {"field": "status", "headerName": "Status", "width": 130, "filter": "agTextColumnFilter"},
     ]
 
 
-def _structure_row(s, by_id, expanded: set, expandable: bool = True) -> dict:
+def _breakeven_str(t2_entry) -> str:
+    """Format a structure's zero-shock breakeven(s) for the grid cell, '/'-joined.
+    '—' when no Tier-2 (unpriceable / no spot); 'none' when the structure never crosses
+    zero (e.g. an always-profitable or always-losing leg-set)."""
+    if not t2_entry:
+        return "—"
+    bes = t2_entry.get("breakevens") or []
+    if not bes:
+        return "none"
+    return " / ".join(f"{b:,.2f}" for b in bes)
+
+
+def _structure_row(s, by_id, expanded: set, expandable: bool = True, t2_map=None) -> dict:
     e = structure_economics(s, by_id)
     return {
         "_row_id": f"structure::{s.structure_id}",
@@ -145,7 +157,7 @@ def _structure_row(s, by_id, expanded: set, expandable: bool = True) -> dict:
         "net_debit_credit": e["net_debit_credit"],
         "net_pnl": e["net_pnl"],
         "net_premium": e["net_premium"],
-        "t2_pricing": PENDING_PRICING,
+        "t2_pricing": _breakeven_str((t2_map or {}).get(s.structure_id)),
     }
 
 
@@ -169,7 +181,7 @@ def _leg_row(s, leg, by_id, idx: int) -> dict:
     }
 
 
-def _substructure_row(sub, by_id) -> dict:
+def _substructure_row(sub, by_id, t2_map=None) -> dict:
     e = structure_economics(sub, by_id)
     return {
         "_row_id": f"sub::{sub.structure_id}",
@@ -186,7 +198,7 @@ def _substructure_row(sub, by_id) -> dict:
         "net_debit_credit": e["net_debit_credit"],
         "net_pnl": e["net_pnl"],
         "net_premium": e["net_premium"],
-        "t2_pricing": "",
+        "t2_pricing": _breakeven_str((t2_map or {}).get(sub.structure_id)),
     }
 
 
@@ -207,6 +219,7 @@ def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]
     unique/stable."""
     expanded = set(expanded_sids or [])
     by_id = {p.position_id: p for p in account_state.positions}
+    t2_map = getattr(account_state, "structure_tier2", None) or {}
     structures = list(account_state.structures or [])
     rows: list[dict] = []
 
@@ -226,7 +239,7 @@ def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]
     for group, alts in sorted(groups.items()):
         chosen = next((a for a in alts if a.status in _CONFIRMED), None)
         if chosen is not None:
-            rows.append(_structure_row(chosen, by_id, expanded))
+            rows.append(_structure_row(chosen, by_id, expanded, t2_map=t2_map))
             if chosen.structure_id in expanded:
                 rows.extend(_leg_row(chosen, leg, by_id, i) for i, leg in enumerate(chosen.legs))
         else:
@@ -243,7 +256,7 @@ def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]
                 "status": "Needs your choice",
                 "strikes": "", "expiry": "", "dte": None, "net_qty": None,
                 "net_debit_credit": None, "net_pnl": None, "net_premium": None,
-                "t2_pricing": PENDING_PRICING,
+                "t2_pricing": "—",
             })
 
     # 2) Primary structures (not contended, not rejected), ordered by attention.
@@ -258,13 +271,13 @@ def build_structure_rows(account_state, state, expanded_sids=None) -> list[dict]
                 -abs(npnl) if npnl is not None else 0.0)
 
     for s in sorted(primaries, key=_attention_key):
-        rows.append(_structure_row(s, by_id, expanded))
+        rows.append(_structure_row(s, by_id, expanded, t2_map=t2_map))
         if s.structure_id in expanded:
             rows.extend(_leg_row(s, leg, by_id, i) for i, leg in enumerate(s.legs))
             for sub in structures:
                 if (sub.type in _SUB and sub.underlying == s.underlying
                         and sub.status != "rejected"):
-                    rows.append(_substructure_row(sub, by_id))
+                    rows.append(_substructure_row(sub, by_id, t2_map=t2_map))
 
     for r in rows:
         r["_account"] = account_state.account

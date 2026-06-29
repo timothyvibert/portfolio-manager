@@ -99,6 +99,10 @@ class AccountState:
     # the beta-mapped portfolio P&L curve at fast BS2002), pre-computed in the load
     # path after exposure. The UI reads it and never recomputes. See pm.risk.scenario.
     scenario: Optional["AccountScenario"] = None
+    # Per-structure Tier-2 economics (zero-shock breakevens + max P/L + PoP), precomputed
+    # in the load path after scenario (item 1). The By-Structure grid reads the breakeven
+    # from here; the payoff drawer carries the full set. structure_id -> dict.
+    structure_tier2: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -246,6 +250,14 @@ def load_portfolio_state(
     # no recompute). Runs after exposure so beta + greeks are in place.
     from pm.risk.scenario import run_account_scenario
     run_account_scenario(state)
+
+    # Per-structure Tier-2 economics (item 1) — zero-shock payoff per structure (engine
+    # legs built once per account, reused), storing breakeven / max P/L / PoP on
+    # acc.structure_tier2. Fills the By-Structure grid's Breakeven column (was the
+    # 'pending pricing' stub). Pure/read-only; runs after scenario so the engine legs +
+    # structures are in place.
+    from pm.risk.payoff import run_structure_tier2
+    run_structure_tier2(state)
 
     # Structure-aware management fires (coverage breach, ex-div context, carry,
     # at-cap, pin, collar-monetize). Appends Fires to each AccountState and

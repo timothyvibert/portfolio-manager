@@ -72,6 +72,8 @@ class PayoffResult:
     grid: list
     expiry_curve: list
     horizon_curve: Optional[list]
+    expiry_curve_stock: Optional[list]      # stock legs alone (None if no stock leg)
+    expiry_curve_options: Optional[list]    # option legs alone (None if no option legs)
     strikes: list
     breakevens: list
     economics: dict
@@ -268,7 +270,7 @@ def _assemble_legs(by_id, elegs, norm, account_state, today_ts) -> dict:
             "warnings": warnings, "degraded": degraded}
 
 
-def build_structure_payoff_legs(state, account_state, target, today=None) -> dict:
+def build_structure_payoff_legs(state, account_state, target, today=None, elegs=None) -> dict:
     """Assemble a combined leg list for the payoff toolkit, sliced and entry-based.
 
     Option legs reuse the resolved engine inputs (σ/style/T/r/q via ``EngineLeg``) but
@@ -282,7 +284,8 @@ def build_structure_payoff_legs(state, account_state, target, today=None) -> dic
     """
     is_struct, underlying, sid, stype, norm = _normalized_legs(target)
     by_id = {p.position_id: p for p in (getattr(account_state, "positions", None) or [])}
-    elegs = {e.position_id: e for e in build_engine_legs(state, account_state, today=today)}
+    if elegs is None:
+        elegs = {e.position_id: e for e in build_engine_legs(state, account_state, today=today)}
     asm = _assemble_legs(by_id, elegs, norm, account_state, _today_ts(today))
     asm.update({"underlying": underlying, "structure_id": sid, "structure_type": stype,
                 "is_structure": is_struct})
@@ -397,6 +400,16 @@ def compute_payoff(leg_dicts, spot, tier1, *, shock=None, n_points=DEFAULT_N_POI
     breakevens = _breakevens(grid, expiry_curve)
     maxpl = payoff_risk.strategy_max_profit_loss(grid, expiry_curve, leg_dicts)
 
+    # Component (standalone-vs-net) curves: the same at-expiry kernel over leg subsets.
+    # Linear in legs, so combined == stock-alone + options-alone at every grid point
+    # (the conservation oracle). None when that subset is empty.
+    stock_legs = [l for l in leg_dicts if l["opt_type"] == "Stock"]
+    option_legs = [l for l in leg_dicts if l["opt_type"] != "Stock"]
+    expiry_curve_stock = (payoff_risk.payoff_net_at_expiry(stock_legs, grid)
+                          if stock_legs else None)
+    expiry_curve_options = (payoff_risk.payoff_net_at_expiry(option_legs, grid)
+                            if option_legs else None)
+
     # Baked premium — the constant the at-expiry NET curve subtracts. The conservation
     # identity is: baked == net_debit_credit (mark-free; proves slice + per-share basis).
     baked = 0.0
@@ -479,6 +492,7 @@ def compute_payoff(leg_dicts, spot, tier1, *, shock=None, n_points=DEFAULT_N_POI
     }
     return {
         "grid": grid, "expiry_curve": expiry_curve, "horizon_curve": horizon_curve,
+        "expiry_curve_stock": expiry_curve_stock, "expiry_curve_options": expiry_curve_options,
         "breakevens": breakevens, "strikes": tier1.get("strikes") or [],
         "economics": economics, "greeks_now": greeks_now, "greeks_shocked": greeks_shocked,
         "shocked_spot": shocked_spot, "spot": spot, "warnings": warnings, "trace": trace,
@@ -491,16 +505,21 @@ def compute_payoff(leg_dicts, spot, tier1, *, shock=None, n_points=DEFAULT_N_POI
 
 def structure_payoff(state, account_state, target, *, shock=None,
                      n_points=DEFAULT_N_POINTS, range_pct=DEFAULT_RANGE_PCT,
-                     today=None) -> Optional[PayoffResult]:
+                     today=None, elegs=None) -> Optional[PayoffResult]:
     """Assemble ``target`` (a Structure or a standalone Position) and compute its payoff
     panel. Read-only: no Bloomberg, no reload, no state write-back. Returns None when no
-    priceable leg / spot is available."""
-    asm = build_structure_payoff_legs(state, account_state, target, today=today)
+    priceable leg / spot is available. ``elegs`` (the pre-built engine-leg map) lets a
+    load-path pass over many structures build the legs ONCE instead of per call."""
+    asm = build_structure_payoff_legs(state, account_state, target, today=today, elegs=elegs)
     leg_dicts, spot = asm["leg_dicts"], asm["spot"]
     if not leg_dicts or spot is None or not (spot > 0):
         return None
     res = compute_payoff(leg_dicts, spot, asm["tier1"], shock=shock,
                          n_points=n_points, range_pct=range_pct, today=today)
+
+    def _flist(v):
+        return None if v is None else [float(x) for x in v]
+
     return PayoffResult(
         account=getattr(account_state, "account", ""),
         underlying=asm["underlying"] or "",
@@ -510,10 +529,42 @@ def structure_payoff(state, account_state, target, *, shock=None,
         spot=res["spot"], shocked_spot=res["shocked_spot"],
         grid=[float(x) for x in res["grid"]],
         expiry_curve=[float(x) for x in res["expiry_curve"]],
-        horizon_curve=(None if res["horizon_curve"] is None
-                       else [float(x) for x in res["horizon_curve"]]),
+        horizon_curve=_flist(res["horizon_curve"]),
+        expiry_curve_stock=_flist(res["expiry_curve_stock"]),
+        expiry_curve_options=_flist(res["expiry_curve_options"]),
         strikes=res["strikes"], breakevens=res["breakevens"],
         economics=res["economics"], greeks_now=res["greeks_now"],
         greeks_shocked=res["greeks_shocked"], legs=asm["summaries"],
         degraded=asm["degraded"], warnings=asm["warnings"] + res["warnings"], trace=res["trace"],
     )
+
+
+def run_structure_tier2(state) -> None:
+    """Load-path pass (item 1): per account, build the option engine legs ONCE, then
+    compute each structure's zero-shock payoff and store its Tier-2 economics on
+    ``account_state.structure_tier2[structure_id]`` — the By-Structure grid reads the
+    breakeven(s) from it (killing the 'pending pricing' stub). Pure / read-only; runs
+    after ``run_account_scenario``. A structure with no priceable leg / spot is skipped
+    (its grid cell falls back to '—')."""
+    for acc in state.accounts.values():
+        tier2: dict = {}
+        try:
+            elegs = {e.position_id: e for e in build_engine_legs(state, acc)}
+        except Exception:
+            elegs = {}
+        for s in (getattr(acc, "structures", None) or []):
+            if getattr(s, "status", None) == "rejected":
+                continue
+            try:
+                res = structure_payoff(state, acc, s, elegs=elegs)
+            except Exception:
+                res = None
+            if res is None:
+                continue
+            tier2[s.structure_id] = {
+                "breakevens": list(res.breakevens or []),
+                "max_profit": res.economics.get("max_profit"),
+                "max_loss": res.economics.get("max_loss"),
+                "pop": res.economics.get("pop"),
+            }
+        acc.structure_tier2 = tier2
