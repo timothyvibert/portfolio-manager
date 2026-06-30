@@ -1,16 +1,19 @@
 """Section — Client profile (the trade-history behavioural read).
 
 Renders the precomputed per-account ``acc.client_profile`` (from
-pm.insight.client_profile): a five-second, pre-call glance at *how this client
-trades* — strategy posture, tenor, direction, sector lean, sizing — over a
-coverage band that keeps the read honest about thin history. A pure read of
-``acc.client_profile``: no compute, no Bloomberg, no recompute.
+pm.insight.client_profile) as a dense, distribution-forward glance at *how this
+client trades*: a full-width fingerprint strip over a responsive grid of
+dimension tiles (strategy posture, tenor + direction, sector lean, name lean,
+sizing, cadence). A pure read of the stored profile — no compute, no Bloomberg,
+no recompute. The tiles draw fields the engine already produced (the weight maps,
+the tenor distribution, the skews); they never re-bin or recompute from the raw
+trades in the view.
 
 This surface is behavioural, not P&L, so it stays in neutral chrome. Sign-colour
-is reserved for the one genuine direction the desk reads (net delta lean);
-magnitudes and the coverage / confidence signals stay quiet, and a suppressed or
-low-confidence dimension says so rather than showing a precise-looking false
-number.
+is earned in exactly one place — the net-delta lean — where the desk reads a real
+direction. Magnitudes and the coverage / confidence signals stay quiet, and a
+suppressed or low-confidence dimension says so rather than showing a precise-
+looking false number.
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from typing import Optional
 
 from dash import html
 
-from pm.ui.deepdive.bars import bar_row
+from pm.ui.deepdive.bars import bar_row, bin_histogram, diverging_gauge, magnitude_gauge
 from pm.ui.deepdive.formatters import money_compact, pct
 
 # Display labels (render-only — the engine keys are the source of truth).
@@ -33,6 +36,11 @@ _POSTURE_LABELS = {
 _TENOR_LABELS = {"short": "Short-dated", "swing": "Swing", "leaps": "LEAPS"}
 _BAND_HELP = ("Coverage band from trade count and round-trip evidence — thin "
               "history reads low, so dimensions degrade rather than mislead.")
+
+# Three across on the full-width deep-dive, collapsing to two then one on narrower
+# viewports. Inline structural geometry only — palette/chrome stay on the tokens.
+_GRID_STYLE = {"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(400px, 1fr))",
+               "gap": "12px", "marginTop": "12px"}
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +63,7 @@ def _sign_cls(v: Optional[float]) -> str:
 
 
 def _conf_suffix(confidence: Optional[str]) -> str:
-    """A quiet caveat appended to a card subtitle when the read is thin."""
+    """A quiet caveat appended to a tile subtitle when the read is thin."""
     return " · low confidence" if confidence == "low" else ""
 
 
@@ -70,22 +78,12 @@ def _skew_text(v: Optional[float], pos_word: str, neg_word: str) -> str:
     return f"{pct(abs(v), 0)} {pos_word if v >= 0 else neg_word}"
 
 
-def _hhi_text(h: Optional[float]) -> str:
-    return "—" if h is None else f"{h:.2f}"
-
-
-def _tenor_text(median_dte: Optional[float], bucket: Optional[str]) -> str:
-    label = _TENOR_LABELS.get(bucket, bucket or "—")
-    if median_dte is None:
-        return label
-    return f"{label} · {median_dte:.0f}d median"
-
-
-def _dist_text(dist: dict) -> str:
-    if not dist:
-        return ""
-    return (f"{pct(dist.get('short', 0), 0)}/{pct(dist.get('swing', 0), 0)}/"
-            f"{pct(dist.get('leaps', 0), 0)} short/swing/LEAPS")
+def _tile(title: str, subtitle: Optional[str], *body) -> html.Div:
+    children = [html.H3(title, className="dd-panel-title")]
+    if subtitle:
+        children.append(html.Div(subtitle, className="dd-panel-subtitle"))
+    children.extend([b for b in body if b is not None])
+    return html.Div(className="dd-panel", children=children)
 
 
 # ---------------------------------------------------------------------------
@@ -99,15 +97,23 @@ def build_strategy_rows(profile) -> list[dict]:
     return [{"key": k, "label": _POSTURE_LABELS.get(k, k), "weight": w} for k, w in ranked]
 
 
-def build_lean_rows(profile) -> dict:
-    """Sector lean when any name resolved to a GICS sector, else the
-    always-available underlying lean — flagged by ``mode``."""
+def build_sector_rows(profile) -> dict:
+    """The ranked GICS-sector lean (the names that resolved to a sector)."""
     sl = profile.sector_lean
-    if sl.top:
-        return {"mode": "sector", "classified": sl.classified_fraction,
-                "rows": [{"label": s, "weight": w} for s, w in sl.top]}
-    return {"mode": "name", "classified": sl.classified_fraction,
-            "rows": [{"label": n, "weight": w} for n, w in sl.by_name]}
+    return {"rows": [{"label": s, "weight": w} for s, w in sl.top],
+            "classified": sl.classified_fraction}
+
+
+def build_name_rows(profile) -> list[dict]:
+    """The ranked underlying lean — the names they actually trade."""
+    return [{"label": n, "weight": w} for n, w in profile.sector_lean.by_name]
+
+
+def build_tenor_bins(profile) -> list[tuple]:
+    """The at-open tenor distribution as ordered (label, fraction) bins."""
+    d = profile.tenor_pref.distribution or {}
+    return [("Short", d.get("short", 0.0)), ("Swing", d.get("swing", 0.0)),
+            ("LEAPS", d.get("leaps", 0.0))]
 
 
 def build_coverage_stats(profile) -> dict:
@@ -125,116 +131,121 @@ def build_coverage_stats(profile) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Cards
+# Fingerprint strip + tiles
 # ---------------------------------------------------------------------------
 
-def _fingerprint_panel(profile) -> html.Div:
-    band = profile.coverage.band
+def _fingerprint_strip(profile) -> html.Div:
+    c = profile.coverage
+    pos_open = c.positions_with_derivable_open_fraction
+    depth = (f"{_window_text(c.window_days)} window · {c.n_trades} trades · "
+             f"{pct(c.paired_fraction, 0)} round-tripped · "
+             f"{pct(pos_open, 0) if pos_open is not None else '—'} with entry in window")
     return html.Div(className="dd-panel", children=[
         html.Div(className="dd-panel-headrow", children=[
-            html.H3("How this client trades", className="dd-panel-title"),
-            html.Span(f"coverage · {band}", className="dd-beta-chip", title=_BAND_HELP),
+            html.Div(children=[
+                html.Div("How this client trades", className="dd-stat-label"),
+                html.Div(profile.headline or "—", className="dd-stat-value"),
+            ]),
+            html.Span(f"coverage · {c.band}", className="dd-beta-chip", title=_BAND_HELP),
         ]),
-        html.Div(profile.headline or "—", className="dd-stat-value"),
-        html.Div(f"{profile.coverage.n_trades} trades over "
-                 f"{_window_text(profile.coverage.window_days)}",
-                 className="dd-panel-subtitle"),
+        html.Div(depth, className="dd-panel-subtitle"),
     ])
 
 
-def _strategy_panel(profile) -> html.Div:
-    rows = build_strategy_rows(profile)
-    if rows:
-        max_w = max(r["weight"] for r in rows)
-        body = html.Div(className="dd-bars", children=[
-            bar_row(r["label"], r["weight"], max_w, sign_color=False) for r in rows
-        ])
-    else:
-        body = html.Div("Insufficient history.", className="dd-empty")
-    return html.Div(className="dd-panel", children=[
-        html.H3("Strategy mix", className="dd-panel-title"),
-        html.Div("What the account opens, by posture — from trade flow"
-                 + _conf_suffix(profile.strategy_bias.confidence) + ".",
-                 className="dd-panel-subtitle"),
-        body,
+def _ranked_bars(rows: list[dict]):
+    if not rows:
+        return html.Div("Insufficient history.", className="dd-empty")
+    max_w = max(r["weight"] for r in rows)
+    return html.Div(className="dd-bars", children=[
+        bar_row(r["label"], r["weight"], max_w, sign_color=False) for r in rows
     ])
 
 
-def _tenor_direction_panel(profile) -> html.Div:
+def _strategy_tile(profile) -> html.Div:
+    return _tile(
+        "Strategy posture",
+        "What the account opens, by posture — from trade flow"
+        + _conf_suffix(profile.strategy_bias.confidence) + ".",
+        _ranked_bars(build_strategy_rows(profile)),
+    )
+
+
+def _tenor_direction_tile(profile) -> html.Div:
     t = profile.tenor_pref
     d = profile.direction_bias
     if t.bucket:
-        tenor_stat = _stat("At-open tenor", _tenor_text(t.median_dte_at_open, t.bucket),
-                           sub=_dist_text(t.distribution))
+        tenor_body = [
+            bin_histogram(build_tenor_bins(profile)),
+            html.Div(f"median {t.median_dte_at_open:.0f}d · {_TENOR_LABELS.get(t.bucket, t.bucket)}",
+                     className="dd-panel-note"),
+        ]
     else:
-        tenor_stat = _stat("At-open tenor", "—", sub="insufficient history")
-    return html.Div(className="dd-panel", children=[
-        html.H3("Tenor & direction", className="dd-panel-title"),
-        html.Div("At-open days-to-expiry and directional lean"
-                 + _conf_suffix(d.confidence) + ".", className="dd-panel-subtitle"),
-        html.Div(className="dd-stat-row", children=[
-            tenor_stat,
-            # Call vs put is a composition, not a gain/loss — kept neutral.
-            _stat("Call / put", _skew_text(d.call_put_skew, "calls", "puts")),
-            # Net delta lean is a genuine bullish/bearish direction — sign-coloured.
-            _stat("Net Δ", _skew_text(d.long_short_skew, "long", "short"),
-                  cls=_sign_cls(d.long_short_skew)),
-        ]),
-    ])
+        tenor_body = [html.Div("Tenor — insufficient history.", className="dd-empty")]
+    # Net delta: the lone sign-coloured element (a genuine bullish/bearish lean).
+    net_delta = html.Div(
+        style={"display": "flex", "alignItems": "center", "gap": "8px", "marginTop": "12px"},
+        children=[
+            html.Span("Net Δ", className="dd-stat-label", style={"minWidth": "44px"}),
+            diverging_gauge(d.long_short_skew),
+            html.Span(_skew_text(d.long_short_skew, "long", "short"),
+                      className=f"dd-bar-val {_sign_cls(d.long_short_skew)}".strip(),
+                      style={"minWidth": "64px"}),
+        ],
+    )
+    # Call/put is a composition, not a gain/loss — kept neutral.
+    call_put = html.Div(
+        className="dd-panel-note",
+        children=f"Call / put: {_skew_text(d.call_put_skew, 'calls', 'puts')}",
+    )
+    return _tile("Tenor & direction",
+                 "At-open days-to-expiry and directional lean" + _conf_suffix(d.confidence) + ".",
+                 *tenor_body, net_delta, call_put)
 
 
-def _lean_panel(profile) -> html.Div:
-    info = build_lean_rows(profile)
-    rows = info["rows"]
-    if rows:
-        max_w = max(r["weight"] for r in rows)
-        body = html.Div(className="dd-bars", children=[
-            bar_row(r["label"], r["weight"], max_w, sign_color=False) for r in rows
-        ])
-    else:
-        body = html.Div("Insufficient history.", className="dd-empty")
-    if info["mode"] == "sector":
+def _sector_tile(profile) -> html.Div:
+    info = build_sector_rows(profile)
+    if info["rows"]:
         sub = f"By GICS sector · {pct(info['classified'], 0)} of flow classified"
+        body = _ranked_bars(info["rows"])
     else:
-        sub = "By underlying (sector unavailable for traded names)"
-    return html.Div(className="dd-panel", children=[
-        html.H3("Sector / name lean", className="dd-panel-title"),
-        html.Div(sub, className="dd-panel-subtitle"),
-        body,
-    ])
+        sub = "By GICS sector"
+        body = html.Div("Sector unavailable for the traded names.", className="dd-empty")
+    return _tile("Sector lean", sub, body)
 
 
-def _sizing_coverage_panel(profile) -> html.Div:
+def _name_tile(profile) -> html.Div:
+    return _tile("Name lean", "Most-traded underlyings, by trade count",
+                 _ranked_bars(build_name_rows(profile)))
+
+
+def _sizing_tile(profile) -> html.Div:
     s = profile.sizing
+    body = [_stat("Median trade",
+                  money_compact(s.median_principal) if s.median_principal is not None else "—")]
+    if s.concentration_hhi is not None:
+        body.append(html.Div("Name concentration", className="dd-stat-label",
+                             style={"marginTop": "12px"}))
+        body.append(magnitude_gauge(s.concentration_hhi))
+        body.append(html.Div(f"HHI {s.concentration_hhi:.2f}", className="dd-panel-note"))
+    return _tile("Sizing", "Per-trade size and how concentrated the names are.", *body)
+
+
+def _cadence_tile(profile) -> html.Div:
     cad = profile.cadence
-    c = profile.coverage
-    size_stats = [
-        _stat("Median trade",
-              money_compact(s.median_principal) if s.median_principal is not None else "—"),
-        _stat("Concentration", _hhi_text(s.concentration_hhi), sub="HHI · 1/N…1"),
-        _stat("Cadence",
-              f"{cad.trades_per_month:.1f}/mo" if cad.trades_per_month is not None else "—",
-              sub=None if cad.trades_per_month is not None else "insufficient history"),
-    ]
-    pos_open = c.positions_with_derivable_open_fraction
-    cov_stats = [
-        _stat("History", f"{c.n_trades} trades · {_window_text(c.window_days)}"),
-        _stat("Round-tripped", pct(c.paired_fraction, 0), sub="open + close in window"),
-        _stat("Entry in window", pct(pos_open, 0) if pos_open is not None else "—",
-              sub="held positions with an opening trade"),
-    ]
-    return html.Div(className="dd-panel", children=[
-        html.H3("Sizing & coverage", className="dd-panel-title"),
-        html.Div("Trade sizing, name concentration, and how much history backs this read.",
-                 className="dd-panel-subtitle"),
-        html.Div(className="dd-stat-row", children=size_stats),
-        html.Div(className="dd-stat-row", children=cov_stats),
-    ])
+    if cad.trades_per_month is None:
+        return _tile("Cadence", "Trading frequency.",
+                     _stat("Cadence", "—", sub="insufficient history"))
+    # clustering is shown only once derived — never a bare "n/a".
+    extra = None
+    if cad.clustering and cad.clustering != "n/a":
+        extra = html.Div(f"clusters around {cad.clustering}", className="dd-panel-note")
+    return _tile("Cadence", "Trading frequency.",
+                 _stat("Trades / month", f"{cad.trades_per_month:.1f}"), extra)
 
 
 def _fragile_panel() -> html.Div:
     """Deferred holds/rolls — honestly stubbed; a later pass fills it in."""
-    return html.Div(className="dd-panel", children=[
+    return html.Div(className="dd-panel", style={"marginTop": "12px"}, children=[
         html.Details(open=False, children=[
             html.Summary("Holding period & rolls", className="dd-panel-title"),
             html.Div("Holding-period, roll, and realised-income views need open↔close "
@@ -256,11 +267,13 @@ def render_trade_insights_section(account_state) -> html.Div:
             head,
             html.Div("Trade-history profile unavailable for this account.", className="dd-empty"),
         ])
-    grid = html.Div(className="dd-analytics-grid", children=[
-        _fingerprint_panel(profile),
-        _strategy_panel(profile),
-        _tenor_direction_panel(profile),
-        _lean_panel(profile),
-        _sizing_coverage_panel(profile),
+    grid = html.Div(style=_GRID_STYLE, children=[
+        _strategy_tile(profile),
+        _tenor_direction_tile(profile),
+        _sector_tile(profile),
+        _name_tile(profile),
+        _sizing_tile(profile),
+        _cadence_tile(profile),
     ])
-    return html.Div(className="dd-section", children=[head, grid, _fragile_panel()])
+    return html.Div(className="dd-section", children=[head, _fingerprint_strip(profile), grid,
+                                                      _fragile_panel()])
