@@ -21,6 +21,7 @@ from pm.ui.deepdive.header import (
     render_kpis,
 )
 from pm.ui.deepdive.positions import render_positions_section
+from pm.ui.deepdive.trade_insights import render_trade_insights_section
 from pm.ui.deepdive.trades import render_trades_section
 
 
@@ -40,6 +41,7 @@ def render_deepdive_sections(state: Optional[PortfolioState], account: Optional[
             "deepdive-exposure": empty,
             "deepdive-scenario": empty,
             "deepdive-analytics": empty,
+            "deepdive-trade-insights": empty,
             "deepdive-trades": empty,
         }
     return {
@@ -48,6 +50,7 @@ def render_deepdive_sections(state: Optional[PortfolioState], account: Optional[
         "deepdive-exposure": render_exposure_section(acc_state),
         "deepdive-scenario": render_scenario_section(acc_state, state),
         "deepdive-analytics": render_analytics_section(acc_state),
+        "deepdive-trade-insights": render_trade_insights_section(acc_state),
         "deepdive-trades": render_trades_section(acc_state),
     }
 
@@ -67,7 +70,8 @@ def render_deepdive_tab(state: Optional[PortfolioState]) -> html.Div:
         html.Div(id="deepdive-analytics", children=sections["deepdive-analytics"]),
         html.Div(id="deepdive-exposure", children=sections["deepdive-exposure"]),
         html.Div(id="deepdive-scenario", children=sections["deepdive-scenario"]),
-        # Reserved: trade-history insights (Arc 3) — slot kept, not built here.
-        html.Div(id="deepdive-trade-insights"),
+        # Trade-history insights — the client-profile section (Arc 3).
+        html.Div(id="deepdive-trade-insights",
+                 children=sections["deepdive-trade-insights"]),
         html.Div(id="deepdive-trades", children=sections["deepdive-trades"]),
     ])

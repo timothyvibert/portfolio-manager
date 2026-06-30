@@ -24,6 +24,7 @@ from pm.ui.drawers.payoff import render_payoff
 _DD_HOST_IDS = [
     "deepdive-kpi", "deepdive-positions", "deepdive-exposure",
     "deepdive-scenario", "deepdive-analytics", "deepdive-trades",
+    "deepdive-trade-insights",
 ]
 
 
@@ -91,6 +92,7 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
         Output("deepdive-scenario", "children"),
         Output("deepdive-analytics", "children"),
         Output("deepdive-trades", "children"),
+        Output("deepdive-trade-insights", "children"),
         Input("deepdive-account-picker", "value"),
         Input("deepdive-refresh-tick", "data"),
         Input("pm-tabs", "value"),

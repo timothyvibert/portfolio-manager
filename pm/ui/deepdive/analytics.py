@@ -20,10 +20,7 @@ from pm.ui.deepdive.aggregations import (
     expiry_ladder,
     long_short_premium_split,
 )
-
-
-def _pct(v: Optional[float], dp: int = 1) -> str:
-    return "—" if v is None else f"{v * 100:.{dp}f}%"
+from pm.ui.deepdive.bars import bar_row
 
 
 def _stat(label: str, value: str, sub: Optional[str] = None, cls: str = "") -> html.Div:
@@ -86,32 +83,10 @@ def _ladder_panel(account_state) -> html.Div:
     ])
 
 
-def _bar_row(label: str, pct: Optional[float], max_w: float) -> html.Div:
-    """One sign-aware horizontal bar. Width is |pct| / max (magnitude); a negative
-    (net-short) exposure tints the fill and value red, a positive one greens the
-    value — so shorts/CSPs that the old stock-MV basis hid now read at a glance."""
-    neg = pct is not None and pct < 0
-    pos = pct is not None and pct > 0
-    width = (abs(pct or 0) / max_w * 100) if max_w else 0
-    fill_cls = "dd-bar-fill dd-bar-fill-neg" if neg else "dd-bar-fill"
-    val_cls = "dd-bar-val"
-    if neg:
-        val_cls += " exposure-neg"
-    elif pos:
-        val_cls += " exposure-pos"
-    return html.Div(className="dd-bar-row", children=[
-        html.Span(label, className="dd-bar-label"),
-        html.Div(className="dd-bar-track", children=[
-            html.Div(className=fill_cls, style={"width": f"{width:.1f}%"}),
-        ]),
-        html.Span(_pct(pct), className=val_cls),
-    ])
-
-
 def _sector_panel(account_state) -> html.Div:
     items = economic_exposure_by_sector(account_state)  # sorted by |delta-$| desc
     max_w = max((abs(r["pct_nav"] or 0) for r in items), default=0)
-    bars = [_bar_row(r["sector"], r["pct_nav"], max_w) for r in items]
+    bars = [bar_row(r["sector"], r["pct_nav"], max_w) for r in items]
     if not bars:
         bars = [html.Div("No economic exposure to show.", className="dd-empty")]
     diag = getattr(account_state, "diagnostics", None)
@@ -131,7 +106,7 @@ def _sector_panel(account_state) -> html.Div:
 def _concentration_panel(account_state) -> html.Div:
     top = economic_exposure_by_underlying(account_state)[:5]
     max_w = max((abs(r["pct_nav"] or 0) for r in top), default=0)
-    rows = [_bar_row(r["symbol"] or "—", r["pct_nav"], max_w) for r in top]
+    rows = [bar_row(r["symbol"] or "—", r["pct_nav"], max_w) for r in top]
     if not rows:
         rows = [html.Div("No economic exposure.", className="dd-empty")]
     return html.Div(className="dd-panel", children=[
