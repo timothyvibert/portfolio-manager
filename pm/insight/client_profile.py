@@ -98,6 +98,13 @@ _BAND_HIGH_PAIRED = 0.34  # paired fraction also required for "high"
 _CADENCE_MIN_WINDOW_DAYS = 30  # shorter spans can't be annualised into a rate
 _TOP_N = 5               # sector / name lean is reported top-N
 
+# Fragile-tier dials (provisional — behaviour-tested, not calibrated).
+_HOLDS_MIN_POSITIONS = 3   # held option positions with a derivable open to read a median
+_ROLLS_MIN_CLOSES = 6      # closing trades needed to characterise a roll tendency
+_ROLL_WINDOW_DAYS = 1      # a reopen this many calendar days from a close counts as a roll
+_ROLL_HIGH = 0.5           # roll-like share at/above this reads "rolls"
+_ROLL_LOW = 0.25           # roll-like share below this reads "closes_early"
+
 
 def _sector_of(underlyings, ticker: Optional[str]) -> str:
     """GICS sector for one underlying (in BBG-ticker form), or 'Unclassified'
@@ -215,8 +222,36 @@ class Cadence:
 
 
 @dataclass
+class HoldingPeriod:
+    """Current-book holding-period proxy: median days-held-so-far across held
+    option positions that have a derivable opening trade. DOUBLY LIMITED — it is
+    current-book only (survivorship-biased toward longer holds: positions that were
+    short-held and already closed are absent) AND counts only positions whose
+    contract has an opening trade in the book (``Position.days_held`` matches opens
+    cross-account by contract key — a deliberate ingest behaviour for book
+    transfers). Not a realised holding period; None below the sample floor."""
+    median_days_held: Optional[float] = None
+    n_positions: int = 0
+    confidence: str = "low"
+
+
+@dataclass
+class RollBehavior:
+    """Roll tendency from a HEURISTIC — not a verified FIFO/LIFO pairing. A
+    'rolled close' is a closing trade with a same-underlying, same-right reopen on
+    a different contract within a day (STC↔BTO long, BTC↔STO short). ``tendency``
+    reads the roll-like share of closing activity; ``n_events`` is the observed
+    roll-like count, surfaced even when the tendency is too thin to characterise."""
+    tendency: str = "unknown"   # 'rolls' | 'closes_early' | 'mixed' | 'unknown'
+    n_events: int = 0
+    n_closes: int = 0
+    confidence: str = "low"
+
+
+@dataclass
 class ClientProfile:
-    """The robust flow-tier behavioural profile for one account."""
+    """The behavioural profile for one account — a robust flow tier plus a fragile
+    lifecycle tier (holds proxy + roll heuristic; realised income deferred)."""
     account: str
     coverage: Coverage
     strategy_bias: StrategyBias
@@ -225,6 +260,8 @@ class ClientProfile:
     sector_lean: SectorLean
     sizing: Sizing
     cadence: Cadence
+    holding_period: Optional[HoldingPeriod] = None
+    roll_behavior: Optional[RollBehavior] = None
     headline: str = ""
 
 
@@ -634,6 +671,91 @@ def _positions_with_derivable_open(df: pd.DataFrame, positions) -> Optional[floa
 
 
 # ---------------------------------------------------------------------------
+# Fragile lifecycle tier (holds proxy + roll heuristic; income deferred)
+# ---------------------------------------------------------------------------
+
+def _build_holding_period(positions) -> Optional[HoldingPeriod]:
+    """Median days-held-so-far across currently-held option positions that carry a
+    derivable open (``Position.days_held`` = today − the contract's first opening
+    trade in the book, matched cross-account by contract key). None below the
+    sample floor. Doubly limited — see HoldingPeriod."""
+    held: list[int] = []
+    for p in positions or []:
+        if str(getattr(p, "asset_class", "") or "").strip().lower() != _OPTION_CLASS:
+            continue
+        dh = getattr(p, "days_held", None)
+        if dh is None:
+            continue
+        try:
+            held.append(int(dh))
+        except (TypeError, ValueError):
+            continue
+    if len(held) < _HOLDS_MIN_POSITIONS:
+        return None
+    return HoldingPeriod(median_days_held=float(median(held)), n_positions=len(held),
+                         confidence=_confidence(len(held)))
+
+
+def _build_roll_behavior(df: pd.DataFrame) -> Optional[RollBehavior]:
+    """Roll tendency from the roll-like-clustering heuristic (see RollBehavior).
+    None when there are no option opening or closing trades to read; otherwise a
+    RollBehavior whose tendency is gated to 'unknown' below the close-count floor
+    (n_events still surfaced). n_events counts roll-like CLOSES (the per-close
+    share), so one reopen near two closes counts twice — intentional for the share
+    metric, see RollBehavior."""
+    if df is None or getattr(df, "empty", True) or "_stage" not in df.columns:
+        return None
+    opt = df[df["asset_class"].astype(str).str.lower() == _OPTION_CLASS] \
+        if "asset_class" in df.columns else df
+    closes = opt[opt["_stage"] == "close"]
+    opens = opt[opt["_stage"] == "open"]
+    n_closes = int(len(closes))
+    if n_closes == 0 and len(opens) == 0:
+        return None
+
+    # Pre-extract the opens once (small books; an explicit loop keeps the side /
+    # same-name / different-contract / window rule legible).
+    open_recs = []
+    for _, op in opens.iterrows():
+        od = _as_date(op.get("trade_date"))
+        if od is None or _blank(op.get("underlying_ticker")):
+            continue
+        open_recs.append((str(op.get("underlying_ticker")), str(op.get("option_type") or "").upper(),
+                          op.get("option_contract_key"), op.get("_side"), od))
+
+    n_events = 0
+    for _, cl in closes.iterrows():
+        und = cl.get("underlying_ticker")
+        right = str(cl.get("option_type") or "").upper()
+        ckey = cl.get("option_contract_key")
+        cdate = _as_date(cl.get("trade_date"))
+        if _blank(und) or not right or cdate is None:
+            continue
+        # STC (sell-close of a long) rolls into a BTO; BTC (buy-close of a short) into a STO.
+        want_open_side = "buy" if cl.get("_side") == "sell" else "sell"
+        for o_und, o_right, o_key, o_side, o_date in open_recs:
+            if o_und != str(und) or o_right != right or o_side != want_open_side:
+                continue
+            if not _blank(o_key) and not _blank(ckey) and str(o_key) == str(ckey):
+                continue  # same contract — a re-add, not a roll
+            if abs((o_date - cdate).days) <= _ROLL_WINDOW_DAYS:
+                n_events += 1
+                break
+
+    if n_closes < _ROLLS_MIN_CLOSES:
+        return RollBehavior(tendency="unknown", n_events=n_events, n_closes=n_closes, confidence="low")
+    share = n_events / n_closes if n_closes else 0.0
+    if share >= _ROLL_HIGH:
+        tendency = "rolls"
+    elif share < _ROLL_LOW:
+        tendency = "closes_early"
+    else:
+        tendency = "mixed"
+    return RollBehavior(tendency=tendency, n_events=n_events, n_closes=n_closes,
+                        confidence=_confidence(n_closes))
+
+
+# ---------------------------------------------------------------------------
 # Headline
 # ---------------------------------------------------------------------------
 
@@ -690,7 +812,12 @@ def compute_account_profile(account_state) -> ClientProfile:
             account=account, coverage=coverage,
             strategy_bias=StrategyBias(), direction_bias=DirectionBias(),
             tenor_pref=TenorPref(), sector_lean=SectorLean(), sizing=Sizing(),
-            cadence=Cadence(), headline="No trade history.",
+            cadence=Cadence(),
+            # Holds is positions-derived (Position.days_held, cross-account by
+            # contract), so it can still read for a positions-only / transferred-in
+            # account with an empty trade blotter; rolls needs trades, so stays None.
+            holding_period=_build_holding_period(positions),
+            headline="No trade history.",
         )
 
     coverage = _build_coverage(df, positions, n_cancels)
@@ -700,12 +827,15 @@ def compute_account_profile(account_state) -> ClientProfile:
     sector_lean = _build_sector_lean(df, positions, underlyings)
     sizing = _build_sizing(df)
     cadence = _build_cadence(df, coverage.window_days)
+    holding_period = _build_holding_period(positions)
+    roll_behavior = _build_roll_behavior(df)
     headline = _build_headline(strategy_bias, tenor_pref, sector_lean, coverage.band)
 
     return ClientProfile(
         account=account, coverage=coverage, strategy_bias=strategy_bias,
         direction_bias=direction_bias, tenor_pref=tenor_pref, sector_lean=sector_lean,
-        sizing=sizing, cadence=cadence, headline=headline,
+        sizing=sizing, cadence=cadence, holding_period=holding_period,
+        roll_behavior=roll_behavior, headline=headline,
     )
 
 

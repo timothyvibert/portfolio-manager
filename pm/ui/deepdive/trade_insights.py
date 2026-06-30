@@ -243,14 +243,74 @@ def _cadence_tile(profile) -> html.Div:
                  _stat("Trades / month", f"{cad.trades_per_month:.1f}"), extra)
 
 
-def _fragile_panel() -> html.Div:
-    """Deferred holds/rolls — honestly stubbed; a later pass fills it in."""
+_ROLL_TENDENCY_LABELS = {"rolls": "Rolls positions", "closes_early": "Closes early", "mixed": "Mixed"}
+
+
+def _fragile_holds(hp) -> html.Div:
+    if hp is None or hp.median_days_held is None:
+        value = html.Div("Insufficient history.", className="dd-empty")
+    else:
+        value = html.Div(children=[
+            html.Div(f"{hp.median_days_held:.0f}d", className="dd-stat-value"),
+            html.Div(f"median held · {hp.n_positions} positions" + _conf_suffix(hp.confidence),
+                     className="dd-stat-sub"),
+        ])
+    return html.Div(children=[
+        html.Div("Holding period", className="dd-stat-label"),
+        value,
+        # The load-bearing caveat — both limitations, stated plainly, not a footnote.
+        html.Div("Current-book proxy: days since each held position's contract was first opened in "
+                 "the book (matched by contract across accounts — a deliberate ingest behaviour for "
+                 "book transfers; only positions with such an open are counted). Survivorship-biased "
+                 "toward longer holds — short positions already closed are absent. Not a realised "
+                 "holding period.", className="dd-panel-note"),
+    ])
+
+
+def _fragile_rolls(rb) -> html.Div:
+    if rb is None:
+        value = html.Div("Insufficient history.", className="dd-empty")
+    elif rb.tendency == "unknown":
+        if rb.n_events > 0:
+            plural = "s" if rb.n_events != 1 else ""
+            value = html.Div(f"{rb.n_events} roll-like event{plural} observed · too few closes to "
+                             "characterise the tendency", className="dd-empty")
+        else:
+            value = html.Div("Insufficient history.", className="dd-empty")
+    else:
+        value = html.Div(children=[
+            html.Div(_ROLL_TENDENCY_LABELS.get(rb.tendency, rb.tendency), className="dd-stat-value"),
+            html.Div(f"{rb.n_events} of {rb.n_closes} closes roll-like" + _conf_suffix(rb.confidence),
+                     className="dd-stat-sub"),
+        ])
+    return html.Div(style={"marginTop": "14px"}, children=[
+        html.Div("Roll behaviour", className="dd-stat-label"),
+        value,
+        html.Div("Heuristic over roll-like clustering — a close plus a same-name, same-right reopen "
+                 "on a different contract within a day. Not a verified FIFO/LIFO pairing.",
+                 className="dd-panel-note"),
+    ])
+
+
+def _fragile_income() -> html.Div:
+    return html.Div(style={"marginTop": "14px"}, children=[
+        html.Div("Realised income", className="dd-stat-label"),
+        html.Div("Deferred — needs open↔close trade pairing and a per-trade price derivation "
+                 "(no price column today).", className="dd-panel-note"),
+    ])
+
+
+def _fragile_panel(profile) -> html.Div:
+    """The fragile lifecycle tier — holds proxy, roll heuristic, deferred income —
+    behind a collapsed disclosure, each dimension carrying its own caveat."""
     return html.Div(className="dd-panel", style={"marginTop": "12px"}, children=[
         html.Details(open=False, children=[
             html.Summary("Holding period & rolls", className="dd-panel-title"),
-            html.Div("Holding-period, roll, and realised-income views need open↔close "
-                     "trade pairing — derivable for only part of the current book today — "
-                     "so they are deferred to a later pass.", className="dd-panel-note"),
+            html.Div(style={"marginTop": "10px"}, children=[
+                _fragile_holds(getattr(profile, "holding_period", None)),
+                _fragile_rolls(getattr(profile, "roll_behavior", None)),
+                _fragile_income(),
+            ]),
         ]),
     ])
 
@@ -276,4 +336,4 @@ def render_trade_insights_section(account_state) -> html.Div:
         _cadence_tile(profile),
     ])
     return html.Div(className="dd-section", children=[head, _fingerprint_strip(profile), grid,
-                                                      _fragile_panel()])
+                                                      _fragile_panel(profile)])
