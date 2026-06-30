@@ -38,6 +38,7 @@ from pm.ingest.adw_loader import ADWExtract, find_latest_adw_extract, load_adw_e
 from pm.ingest.position_builder import Position, build_positions
 
 if TYPE_CHECKING:
+    from pm.insight.client_profile import ClientProfile
     from pm.risk.exposure import AccountExposure
 
 
@@ -103,6 +104,11 @@ class AccountState:
     # in the load path after scenario (item 1). The By-Structure grid reads the breakeven
     # from here; the payoff drawer carries the full set. structure_id -> dict.
     structure_tier2: dict = field(default_factory=dict)
+    # Client behavioural profile derived from the account's trade history (strategy
+    # posture, direction, tenor, sector lean, sizing, cadence + a coverage band),
+    # computed in the load path after the risk runs. The UI reads it and never
+    # recomputes. See pm.insight.client_profile.
+    client_profile: Optional["ClientProfile"] = None
 
 
 @dataclass
@@ -258,6 +264,13 @@ def load_portfolio_state(
     # structures are in place.
     from pm.risk.payoff import run_structure_tier2
     run_structure_tier2(state)
+
+    # Client behavioural profile from the trade history — strategy posture,
+    # direction, tenor, sector lean, sizing, cadence + a coverage band, per
+    # account. Pure read of the already-loaded trades + snapshot + positions (no
+    # Bloomberg, no recompute); one bad account degrades to None, not a crash.
+    from pm.insight.client_profile import run_account_profile
+    run_account_profile(state)
 
     # Structure-aware management fires (coverage breach, ex-div context, carry,
     # at-cap, pin, collar-monetize). Appends Fires to each AccountState and
