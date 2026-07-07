@@ -979,6 +979,69 @@ def fetch_option_snapshots(option_tickers: list[str]) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Option chain enumeration — OPT_CHAIN via a plain bdp on the bulk field
+# ---------------------------------------------------------------------------
+# The listed option chain for an underlier is read the same way as the BDVD
+# dividend schedule: a plain bdp on the bulk OPT_CHAIN field (this env has no
+# .bds), whose per-security cell is an array of row dicts
+# {'Security Description': '<canonical option ticker>'}. Enumerating on the
+# underlier's EQUITY ticker returns the true option root even when it differs
+# (e.g. NESN SW -> NES1 SW), which is what lets the snapshot layer recover a held
+# option whose ticker was built from the equity root.
+_OPT_CHAIN_FIELD = "OPT_CHAIN"
+_OPT_CHAIN_DESC_KEY = "Security Description"
+
+
+def _parse_opt_chain_cell(cell: object) -> list[str]:
+    """Parse an OPT_CHAIN bulk cell (array / list of row dicts) into the list of
+    canonical option-ticker strings, in listed order. Drops rows without a
+    description. Never raises."""
+    if cell is None:
+        return []
+    try:
+        rows = list(cell)
+    except TypeError:
+        return []
+    out: list[str] = []
+    for rec in rows:
+        if not isinstance(rec, dict):
+            continue
+        desc = rec.get(_OPT_CHAIN_DESC_KEY)
+        if desc is None:
+            continue
+        text = str(desc).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def fetch_option_chain(underlier: str) -> list[str]:
+    """The listed option chain for *underlier* (its EQUITY bbg ticker) as a list
+    of canonical option-ticker strings, e.g. ``'NES1 SW 07/03/26 C67 Equity'``.
+
+    Access is a plain ``bdp`` on the bulk ``OPT_CHAIN`` field (this env has no
+    ``.bds``); the per-security cell is an array of row dicts — see
+    ``_parse_opt_chain_cell``. Returns ``[]`` on any failure (no session, empty
+    response, parse error) so callers degrade to the constructed best-effort
+    ticker rather than raising. Never raises.
+    """
+    if not underlier:
+        return []
+    try:
+        with with_session() as query:
+            raw = query.bdp([underlier], [_OPT_CHAIN_FIELD])
+        df = _ensure_security_column(_to_pandas(raw))
+        if df.empty or _OPT_CHAIN_FIELD not in df.columns:
+            return []
+        match = df.loc[df["security"] == underlier]
+        cell = (match.iloc[0] if not match.empty else df.iloc[0])[_OPT_CHAIN_FIELD]
+        return _parse_opt_chain_cell(cell)
+    except Exception as exc:
+        logger.warning("OPT_CHAIN fetch for %s failed: %s", underlier, exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # BDH historical fetchers
 # ---------------------------------------------------------------------------
 

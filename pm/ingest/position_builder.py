@@ -108,6 +108,12 @@ class Position:
                                   # the extract's Product Name / Underlying Name
                                   # column. Display-only; no engine input.
 
+    # Set by the enrichment layer when a held option's ticker (built here from the
+    # equity root) is re-keyed to the true listed ticker resolved from the option
+    # chain: the original constructed string, kept for audit. None when the built
+    # ticker resolved as-is (every US single-name). Non-keyed; diagnostic only.
+    provisional_bbg_ticker: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Public entry point

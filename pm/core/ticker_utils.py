@@ -178,3 +178,82 @@ def _value_or_none(value: object) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Option-description parsing + matching (chain resolution)
+# ---------------------------------------------------------------------------
+# A canonical Bloomberg option ticker (the OPT_CHAIN 'Security Description') reads
+# 'NES1 SW 07/03/26 C67.5 Equity': a possibly-multi-token root, then the expiry
+# (MM/DD/YY), then <C|P><strike>, then the market sector. Parsing from the right
+# keeps a multi-token root intact.
+
+
+def _parse_bbg_expiry_token(token: object) -> Optional[date]:
+    """A python date from a Bloomberg 'MM/DD/YY' expiry token, else None."""
+    parsed = pd.to_datetime(str(token).strip(), format="%m/%d/%y", errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _coerce_expiry_date(value: object) -> Optional[date]:
+    """A python date from a date / datetime / Timestamp / parseable string."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def parse_option_description(description: object) -> Optional[dict]:
+    """Parse a canonical option ticker string into
+    ``{'ticker', 'root', 'expiry': date, 'right': 'CALL'|'PUT', 'strike': float}``,
+    or ``None`` when it doesn't parse. ``ticker`` is the original string verbatim
+    (the value that round-trips through a snapshot fetch)."""
+    if not description:
+        return None
+    text = str(description).strip()
+    parts = text.split()
+    if len(parts) < 4:
+        return None
+    opt_token = parts[-2]
+    right = _normalize_put_call(opt_token[:1])
+    strike = _value_or_none(opt_token[1:])
+    expiry = _parse_bbg_expiry_token(parts[-3])
+    if right is None or strike is None or expiry is None:
+        return None
+    return {
+        "ticker": text,
+        "root": " ".join(parts[:-3]),
+        "expiry": expiry,
+        "right": right,
+        "strike": strike,
+    }
+
+
+def match_option_ticker(
+    chain: Sequence[str], expiry: object, strike: object, right: object,
+) -> Optional[str]:
+    """The canonical option ticker in *chain* matching (*expiry*, *strike*,
+    *right*), or ``None`` when no listed contract matches. *chain* is a list of
+    'Security Description' strings (see ``pm.core.bloomberg_client.fetch_option_chain``).
+    Returns the matched string VERBATIM so it round-trips through the snapshot
+    fetch's reindex."""
+    want_expiry = _coerce_expiry_date(expiry)
+    want_right = _normalize_put_call(right)
+    want_strike = _value_or_none(strike)
+    if want_expiry is None or want_right is None or want_strike is None:
+        return None
+    for description in chain or []:
+        parsed = parse_option_description(description)
+        if parsed is None:
+            continue
+        if (parsed["right"] == want_right
+                and parsed["expiry"] == want_expiry
+                and abs(parsed["strike"] - want_strike) <= 1e-6):
+            return parsed["ticker"]
+    return None

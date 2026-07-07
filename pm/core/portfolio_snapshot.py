@@ -14,10 +14,12 @@ import pandas as pd
 from pm.core.bloomberg_client import (
     OPTION_SNAPSHOT_FIELDS,
     UNDERLYING_FIELDS,
+    fetch_option_chain,
     fetch_option_snapshots,
     fetch_spx_betas,
     fetch_underlying_snapshots,
 )
+from pm.core.ticker_utils import match_option_ticker
 
 # SPX-relative beta columns merged onto the underlying snapshot for the exposure
 # view (sourced via a separate override-aware pull — see bloomberg_client.fetch_spx_betas).
@@ -105,21 +107,16 @@ def fetch_portfolio_snapshot(
 
     if option_tickers:
         opts_df = fetch_option_snapshots(option_tickers)
-        missing_options: list[str] = []
-        if not opts_df.empty:
-            for t in option_tickers:
-                if t not in opts_df.index:
-                    missing_options.append(t)
-                    continue
-                if opts_df.loc[t].isna().all():
-                    missing_options.append(t)
-        else:
-            missing_options = list(option_tickers)
+        missing_options = _missing_option_tickers(opts_df, option_tickers)
         if missing_options:
-            warnings.append(
-                f"BBG returned no data for {len(missing_options)} "
-                f"option ticker(s): {missing_options[:5]}"
-                + ("..." if len(missing_options) > 5 else "")
+            # A held option's ticker is built from its EQUITY root, which is wrong
+            # for names whose option root differs (NESN SW -> NES1 SW). Enumerate
+            # each missing name's listed chain once, re-key the leg to the true
+            # ticker, and re-fetch — so its greeks/IV/mark populate instead of
+            # reading as an all-NaN gap. Names that still don't resolve keep their
+            # best-effort ticker and get a specific warning.
+            opts_df = _resolve_missing_options(
+                positions, opts_df, missing_options, warnings,
             )
     else:
         opts_df = _empty_options_df()
@@ -130,6 +127,88 @@ def fetch_portfolio_snapshot(
         fetch_warnings=warnings,
         bloomberg_available=True,
     )
+
+
+def _missing_option_tickers(opts_df: pd.DataFrame, option_tickers: list[str]) -> list[str]:
+    """Option tickers BBG returned no data for — absent from the frame or an
+    all-NaN row (the shape an unresolved constructed ticker produces)."""
+    if opts_df.empty:
+        return list(option_tickers)
+    missing: list[str] = []
+    for t in option_tickers:
+        if t not in opts_df.index or opts_df.loc[t].isna().all():
+            missing.append(t)
+    return missing
+
+
+def _unresolved_option_warning(p: Position) -> str:
+    exp = p.expiry.isoformat() if p.expiry else "?"
+    right = p.right or "?"
+    strike = p.strike if p.strike is not None else "?"
+    name = p.underlying_bbg_ticker or p.underlying_symbol or p.bbg_ticker
+    return f"unresolved after OPT_CHAIN: {name} {exp} {right} {strike}"
+
+
+def _resolve_missing_options(
+    positions: list[Position],
+    opts_df: pd.DataFrame,
+    missing_options: list[str],
+    warnings: list[str],
+) -> pd.DataFrame:
+    """Recover held options whose constructed (equity-root) ticker didn't resolve.
+
+    For each missing option ticker: enumerate its underlier's listed chain once
+    (cached per underlier), match on (expiry, strike, right), and on a hit re-key
+    every position carrying that ticker to the true listed string and re-fetch it.
+    Names that don't resolve keep their best-effort ticker and get a specific
+    warning (never a silent all-NaN, never a skip). Mutates ``Position.bbg_ticker``
+    in place — the single-source key the snapshot index and every downstream
+    lookup read — and records the original on ``provisional_bbg_ticker``. Returns
+    the updated options frame (re-indexed to the re-keyed tickers).
+    """
+    missing_set = set(missing_options)
+    reps_by_ticker: dict[str, list[Position]] = {}
+    for p in positions:
+        if p.asset_class == "option" and p.bbg_ticker in missing_set:
+            reps_by_ticker.setdefault(p.bbg_ticker, []).append(p)
+
+    chain_cache: dict[str, list[str]] = {}
+    resolved: dict[str, str] = {}   # old constructed ticker -> true listed ticker
+    for old_ticker in missing_options:
+        reps = reps_by_ticker.get(old_ticker)
+        if not reps:
+            continue
+        p0 = reps[0]
+        underlier = p0.underlying_bbg_ticker
+        canonical = None
+        if underlier:
+            if underlier not in chain_cache:
+                chain_cache[underlier] = fetch_option_chain(underlier)
+            canonical = match_option_ticker(
+                chain_cache[underlier], p0.expiry, p0.strike, p0.right,
+            )
+        if not canonical or canonical == old_ticker:
+            warnings.append(_unresolved_option_warning(p0))
+            continue
+        for p in reps:
+            p.provisional_bbg_ticker = p.bbg_ticker
+            p.bbg_ticker = canonical
+        resolved[old_ticker] = canonical
+
+    if not resolved:
+        return opts_df
+
+    refetched = fetch_option_snapshots(sorted(set(resolved.values())))
+    opts_df = opts_df.drop(index=[t for t in resolved if t in opts_df.index],
+                           errors="ignore")
+    opts_df = pd.concat([opts_df, refetched])
+
+    # A ticker that matched the chain but still returns no snapshot data (rare):
+    # flag it too, so a re-keyed-but-empty leg is never a silent gap.
+    for old_ticker, new_ticker in resolved.items():
+        if new_ticker not in opts_df.index or opts_df.loc[new_ticker].isna().all():
+            warnings.append(_unresolved_option_warning(reps_by_ticker[old_ticker][0]))
+    return opts_df
 
 
 def _unique_underlying_tickers(positions: list[Position]) -> list[str]:
