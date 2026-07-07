@@ -11,6 +11,7 @@ canonical instance for both the entry point and every callback.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Optional
 
 import pandas as pd
@@ -175,6 +176,286 @@ def price_payoff(
         return None
     from pm.risk.payoff import structure_payoff
     return structure_payoff(state, acc, target, shock=shock)
+
+
+# ---------------------------------------------------------------------------
+# On-demand option-chain slice pull (the scanner's data layer).
+# A SANCTIONED owned-state WRITE path — like resolve_structure / suppress_alert,
+# and categorically UNLIKE the read-only price_scenario / price_payoff: it fetches
+# live data and writes it into the state-attached slice_cache. The cache is fresh
+# each load, so a reload drops every slice (no stale marks survive a Refresh).
+# ---------------------------------------------------------------------------
+
+def _spot_from_snapshot(acc: AccountState, underlier: str) -> Optional[float]:
+    """Underlier spot from the morning snapshot (no re-pull)."""
+    df = getattr(getattr(acc, "snapshot", None), "underlyings", None)
+    if df is None or getattr(df, "empty", True) or underlier not in df.index:
+        return None
+    return coerce_float(df.loc[underlier, "PX_LAST"] if "PX_LAST" in df.columns else None)
+
+
+def pull_slice(
+    account: str, position_id: str, *, refresh: bool = False,
+    refresh_chain: bool = False, n_expiries: int = 3, moneyness_pct: float = 0.15,
+    rights=("CALL", "PUT"), monthlies_only: bool = True,
+) -> Optional[dict]:
+    """Pull the targeted option-chain slice for a held position and cache it on the
+    loaded state. A SANCTIONED owned-state WRITE path (parallel to ``resolve_structure``;
+    it deliberately writes fetched data into owned state, unlike the read-only
+    ``price_scenario`` / ``price_payoff``, which must never mutate it).
+
+    Enumerates the underlier's listed chain **once per underlier** (cached), filters to
+    the window around spot and the held strike (``ticker_utils.filter_chain_slice``), and
+    snapshots the survivors. The held leg's own greeks/IV come from the morning snapshot
+    and are never re-pulled here — this fetches candidate contracts only.
+
+    Returns ``{key, underlier, candidates, df, spot, pulled_at}`` or ``None`` (no state /
+    position / spot, or Bloomberg off). ``refresh`` re-snapshots with fresh greeks/IV
+    (reusing the cached chain); ``refresh_chain`` additionally re-enumerates the chain.
+    Re-opening the same window without ``refresh`` is a cache hit — no Bloomberg call."""
+    state = _RUNTIME.get("state")
+    if state is None or not getattr(state, "bloomberg_ok", False):
+        return None
+    acc = state.accounts.get(account)
+    if acc is None:
+        return None
+    pos = next((p for p in acc.positions
+                if p.position_id == position_id and p.asset_class == "option"), None)
+    if pos is None or not pos.underlying_bbg_ticker or pos.strike is None:
+        return None
+    underlier = pos.underlying_bbg_ticker
+
+    spot = _spot_from_snapshot(acc, underlier)
+    if spot is None:
+        return None
+
+    cache = state.slice_cache
+    chains = cache.setdefault("chains", {})
+    slices = cache.setdefault("slices", {})
+
+    key = (underlier, round(float(pos.strike), 4), pos.expiry, int(n_expiries),
+           round(float(moneyness_pct), 4), bool(monthlies_only),
+           tuple(sorted(str(r).upper() for r in rights)))
+    if not refresh and key in slices:
+        return slices[key]
+
+    from pm.core.ticker_utils import filter_chain_slice, parse_option_description
+
+    chain_entry = chains.get(underlier)
+    if chain_entry is None or refresh_chain:
+        from pm.core.bloomberg_client import fetch_option_chain
+        parsed = [d for d in (parse_option_description(s) for s in fetch_option_chain(underlier)) if d]
+        chain_entry = {"chain": parsed, "pulled_at": datetime.now()}
+        chains[underlier] = chain_entry
+
+    candidates = filter_chain_slice(
+        chain_entry["chain"], spot, pos.strike, horizon_expiry=pos.expiry,
+        n_expiries=n_expiries, moneyness_pct=moneyness_pct, rights=rights,
+        monthlies_only=monthlies_only,
+    )
+
+    from pm.core.bloomberg_client import fetch_option_snapshots
+    df = fetch_option_snapshots(candidates) if candidates else None
+
+    # Surface + IV+pp (a read-only derivation of the cached slice) and IV-rank (a
+    # name-level metric cached beside the chain). Best-effort — a fit failure must not
+    # break the slice pull.
+    surface, iv_pp = _slice_surface(acc, underlier, spot, df)
+    result = {"key": key, "underlier": underlier, "candidates": candidates,
+              "df": df, "spot": spot, "pulled_at": datetime.now(),
+              "surface": surface, "iv_pp": iv_pp,
+              "iv_rank": _slice_iv_rank(state, acc, underlier)}
+    slices[key] = result
+    return result
+
+
+def _snapshot_underlying_row(acc: AccountState, underlier: str):
+    df = getattr(getattr(acc, "snapshot", None), "underlyings", None)
+    if df is None or getattr(df, "empty", True) or underlier not in df.index:
+        return None
+    return df.loc[underlier]
+
+
+def _as_date(v):
+    if v is None:
+        return None
+    try:
+        ts = pd.to_datetime(v, errors="coerce")
+    except Exception:
+        return None
+    return None if pd.isna(ts) else ts.date()
+
+
+def _slice_surface(acc: AccountState, underlier: str, spot: float, df):
+    """Fit the surface + IV+pp over the pulled slice. Returns (SurfaceFit|None,
+    iv_pp rows|None); never raises."""
+    if df is None or getattr(df, "empty", True):
+        return None, None
+    try:
+        from pm.candidates.surface import build_slice_surface
+        row = _snapshot_underlying_row(acc, underlier)
+        earnings = _as_date(row.get("EXPECTED_REPORT_DT")) if row is not None else None
+        built = build_slice_surface(df, spot, earnings_date=earnings)
+        rows = [{"ticker": c.ticker, "strike": c.strike, "expiry": c.expiry,
+                 "right": c.right, "iv": c.iv, "iv_fitted": c.iv_fitted,
+                 "iv_excess": c.iv_excess, "in_fit": c.in_fit, "iv_source": c.iv_source}
+                for c in built["contracts"]]
+        return built["surface"], rows
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("slice surface fit failed for %s", underlier)
+        return None, None
+
+
+def _slice_iv_rank(state: PortfolioState, acc: AccountState, underlier: str):
+    """Trailing 52-week IV-rank of the name's 3M ATM IV, cached per underlier (name-
+    level, one BBG history pull per name per load). Returns a dict or None."""
+    cache = state.slice_cache.setdefault("iv_rank", {})
+    if underlier in cache:
+        return cache[underlier]
+    val = None
+    try:
+        row = _snapshot_underlying_row(acc, underlier)
+        current = coerce_float(row.get("3MTH_IMPVOL_100.0%MNY_DF")) if row is not None else None
+        if current is not None:
+            from pm.candidates.surface import iv_rank
+            from pm.core.bloomberg_client import fetch_iv_history
+            hist = fetch_iv_history([underlier], lookback_days=400).get(underlier)
+            n = int(hist.notna().sum()) if hist is not None else 0
+            val = {"current_3m_atm": current,
+                   "percentile": iv_rank(current, hist) if hist is not None else None,
+                   "n_obs": n}
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("iv-rank failed for %s", underlier)
+    cache[underlier] = val
+    return val
+
+
+# ---------------------------------------------------------------------------
+# Candidate generation + per-candidate economics (the scanner's pricing step).
+# A sanctioned owned-state derivation: reads the cached slice, prices each candidate
+# through the validated payoff engine (one compute_payoff call per candidate), and
+# attaches the result to the slice entry. No new pricing math.
+# ---------------------------------------------------------------------------
+
+def _per_share_basis(pos) -> Optional[float]:
+    cb = coerce_float(getattr(pos, "cost_basis", None))
+    qty = coerce_float(getattr(pos, "quantity", None))
+    return cb / qty if (cb is not None and qty) else None
+
+
+def _held_option_delta(acc: AccountState, pos) -> Optional[float]:
+    opts = getattr(getattr(acc, "snapshot", None), "options", None)
+    if opts is not None and not getattr(opts, "empty", True) and pos.bbg_ticker in opts.index:
+        return coerce_float(opts.loc[pos.bbg_ticker].get("delta_mid"))
+    return None
+
+
+def _held_stock(acc: AccountState, opt_pos):
+    """(shares, cost_basis_per_share) for a long stock position on the option's
+    underlier, else None — so a covered roll prices as covered, a naked one as naked."""
+    for p in acc.positions:
+        if p.asset_class in ("equity", "fund_etf") and (p.quantity or 0) > 0 \
+                and p.symbol == opt_pos.underlying_symbol:
+            basis = _per_share_basis(p)
+            if basis is not None:
+                return (int(p.quantity), basis)
+    return None
+
+
+def _contemporaneous_mid(pos, sl) -> Optional[float]:
+    """The held option's current mid for the net-credit arithmetic: from the slice if
+    present, else an explicit fresh pull (the held leg can lie outside the slice
+    window). The held leg's risk/greeks DISPLAY still uses the morning snapshot."""
+    df = sl.get("df")
+    tk = pos.bbg_ticker
+    if df is not None and not getattr(df, "empty", True) and tk in df.index:
+        m = coerce_float(df.loc[tk].get("PX_MID"))
+        if m is not None:
+            return m
+    try:
+        from pm.core.bloomberg_client import fetch_option_snapshots
+        one = fetch_option_snapshots([tk])
+        return coerce_float(one.loc[tk].get("PX_MID")) if tk in one.index else None
+    except Exception:
+        return None
+
+
+def _spot_slice_df(state: PortfolioState, underlier: str, spot: float):
+    """A spot-centered near-dated slice frame for a stock overlay (there is no held
+    strike/expiry to anchor on). Reuses the per-underlier chain cache."""
+    from datetime import date, timedelta
+    from pm.core.ticker_utils import filter_chain_slice, parse_option_description
+    from pm.core.bloomberg_client import fetch_option_snapshots
+    chains = state.slice_cache.setdefault("chains", {})
+    entry = chains.get(underlier)
+    if entry is None:
+        from pm.core.bloomberg_client import fetch_option_chain
+        parsed = [d for d in (parse_option_description(s) for s in fetch_option_chain(underlier)) if d]
+        entry = {"chain": parsed, "pulled_at": datetime.now()}
+        chains[underlier] = entry
+    today = date.today()
+    tickers = filter_chain_slice(entry["chain"], spot, spot,
+                                 horizon_expiry=today + timedelta(days=90),
+                                 n_expiries=3, moneyness_pct=0.15)
+    return fetch_option_snapshots(tickers) if tickers else None
+
+
+def generate_slice_candidates(account: str, position_id: str, *, objectives=None, cap: int = 15):
+    """Generate + price the adjustment candidates for a held position — rolls for a held
+    option, single-leg overlays for held stock. Attaches the priced candidates to the
+    slice cache entry and returns them (or None)."""
+    state = _RUNTIME.get("state")
+    if state is None or not getattr(state, "bloomberg_ok", False):
+        return None
+    acc = state.accounts.get(account)
+    if acc is None:
+        return None
+    pos = next((p for p in acc.positions if p.position_id == position_id), None)
+    if pos is None:
+        return None
+
+    curve = getattr(state, "risk_free_curve", None) or []
+    rfr = getattr(state, "risk_free_rate", 0.045)
+
+    from pm.candidates.generate import candidates_from_slice, overlays_from_slice
+    cands = []
+    try:
+        if pos.asset_class == "option":
+            sl = pull_slice(account, position_id)
+            if sl is None:
+                return None
+            q = _div_yield(acc, sl["underlier"])
+            held = {"strike": pos.strike, "expiry": pos.expiry, "right": pos.right,
+                    "quantity": pos.quantity, "delta": _held_option_delta(acc, pos)}
+            cands = candidates_from_slice(
+                sl["df"], held, _contemporaneous_mid(pos, sl), sl["spot"],
+                held_stock=_held_stock(acc, pos), risk_free_curve=curve,
+                risk_free_rate=rfr, div_yield=q, objectives=objectives, cap=cap)
+            sl["candidates_priced"] = cands
+        elif pos.asset_class in ("equity", "fund_etf"):
+            spot = _spot_from_snapshot(acc, pos.bbg_ticker)
+            basis = _per_share_basis(pos)
+            if spot is None or basis is None or not pos.quantity:
+                return []
+            df = _spot_slice_df(state, pos.bbg_ticker, spot)
+            q = _div_yield(acc, pos.bbg_ticker)
+            cands = overlays_from_slice(df, spot, int(pos.quantity), basis,
+                                        risk_free_curve=curve, risk_free_rate=rfr,
+                                        div_yield=q, cap=cap)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("candidate generation failed for %s", position_id)
+    return cands
+
+
+def _div_yield(acc: AccountState, underlier: str) -> float:
+    row = _snapshot_underlying_row(acc, underlier)
+    if row is None:
+        return 0.0
+    y = coerce_float(row.get("EQY_DVD_YLD_IND"))
+    return (y / 100.0) if y is not None else 0.0
 
 
 def resolve_structure(

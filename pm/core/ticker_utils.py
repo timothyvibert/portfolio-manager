@@ -257,3 +257,85 @@ def match_option_ticker(
                 and abs(parsed["strike"] - want_strike) <= 1e-6):
             return parsed["ticker"]
     return None
+
+
+# ---------------------------------------------------------------------------
+# Targeted slice selection (the on-demand chain pull's client-side filter)
+# ---------------------------------------------------------------------------
+
+def _is_third_friday(d: date) -> bool:
+    """True when *d* is the standard monthly option expiry — the 3rd Friday of its
+    month (the Friday landing on day 15–21)."""
+    return d.weekday() == 4 and 15 <= d.day <= 21
+
+
+def filter_chain_slice(
+    parsed_chain,
+    spot: object,
+    ref_strike: object,
+    *,
+    horizon_expiry: Optional[date] = None,
+    n_expiries: int = 3,
+    moneyness_pct: float = 0.15,
+    rights: Sequence[str] = ("CALL", "PUT"),
+    monthlies_only: bool = True,
+    today: Optional[date] = None,
+) -> list[str]:
+    """The targeted slice of *parsed_chain* around *spot* and the held (*ref_strike*)
+    contract: the canonical tickers for ``n_expiries`` expiries bracketing the roll
+    horizon and strikes within ``moneyness_pct`` of spot OR the held strike, on the
+    requested rights.
+
+    *parsed_chain* is the enumerated chain — each item a ``parse_option_description``
+    dict or a raw description string (parsed here). Expiries are taken ``>= today``;
+    with ``monthlies_only`` (default) only standard 3rd-Friday expiries are kept, so a
+    liquid name's weeklies don't balloon the count. Expiry selection is forward-biased
+    (the roll-out direction), back-filling earlier monthlies only when fewer than
+    ``n_expiries`` lie ahead. Pure and BBG-free; the caller fetches snapshots for the
+    returned tickers. ``today`` defaults to the current date; it is injectable so the
+    selection is deterministic under test.
+    """
+    if today is None:
+        today = date.today()
+    want_rights = {r for r in (_normalize_put_call(x) for x in rights) if r}
+    spot_v = _value_or_none(spot)
+    if spot_v is None or spot_v <= 0 or not want_rights:
+        return []
+    ref = _value_or_none(ref_strike)
+
+    # Normalise to parsed dicts; drop unparseable rows, non-positive strikes (the
+    # '.01'-type adjusted entries are excluded by the moneyness band regardless), past
+    # expiries, and off-right rows.
+    items = []
+    for entry in parsed_chain or []:
+        parsed = entry if isinstance(entry, dict) else parse_option_description(entry)
+        if not parsed:
+            continue
+        strike, expiry, r = parsed.get("strike"), parsed.get("expiry"), parsed.get("right")
+        if strike is None or strike <= 0 or expiry is None or expiry < today:
+            continue
+        if r not in want_rights:
+            continue
+        items.append(parsed)
+    if not items:
+        return []
+
+    horizon = horizon_expiry or min(p["expiry"] for p in items)
+    expiries = sorted({p["expiry"] for p in items
+                       if not monthlies_only or _is_third_friday(p["expiry"])})
+    if not expiries:
+        return []
+    forward = [e for e in expiries if e >= horizon]
+    chosen = set(forward[:n_expiries])
+    if len(chosen) < n_expiries:
+        back = [e for e in expiries if e < horizon][-(n_expiries - len(chosen)):]
+        chosen |= set(back)
+
+    def _in_band(k: float) -> bool:
+        if abs(k - spot_v) / spot_v <= moneyness_pct:
+            return True
+        return ref is not None and ref > 0 and abs(k - ref) / ref <= moneyness_pct
+
+    out = {p["ticker"] for p in items
+           if p["expiry"] in chosen and _in_band(p["strike"])}
+    return sorted(out)

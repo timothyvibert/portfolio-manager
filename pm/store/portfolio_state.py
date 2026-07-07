@@ -136,6 +136,12 @@ class PortfolioState:
     # BBG-off fallback short rate for the carry check (see config). Used only
     # when risk_free_curve is empty; the fire flags it as an estimate.
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE
+    # On-demand option-chain slice cache, owned by the scanner's sanctioned write
+    # path (state_access.pull_slice). Two-level: {'chains': {underlier: {chain,
+    # pulled_at}}, 'slices': {(underlier, window): {candidates, df, spot, pulled_at}}}.
+    # Freshly empty each load, so a reload (which swaps in a new PortfolioState) drops
+    # every cached slice — the marks never survive a Refresh stale.
+    slice_cache: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

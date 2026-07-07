@@ -1015,6 +1015,52 @@ def _parse_opt_chain_cell(cell: object) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# OVDV published surface — the reachable near-ATM moneyness x tenor grid
+# ---------------------------------------------------------------------------
+# Bloomberg's published vol surface (the OVDV grid) is read as the
+# ``<N>MTH_IMPVOL_<MNY>%MNY_DF`` field family. Confirmed live (2026-07): only the
+# near-the-money region resolves via BDP — tenors 3M/6M/12M x moneyness 90-110%; the
+# 1M/2M tenors and the 80%/120% wings return nothing. Those gaps are reported as None,
+# never interpolated. Used as an independent cross-check against our own fitted surface.
+_OVDV_TENOR_MONTHS = (3, 6, 12)
+_OVDV_MONEYNESS = (90.0, 95.0, 100.0, 105.0, 110.0)
+
+
+def _ovdv_field(months: int, mny: float) -> str:
+    return "%dMTH_IMPVOL_%.1f%%MNY_DF" % (months, mny)
+
+
+def fetch_ovdv_grid(underlier: str) -> dict:
+    """Bloomberg's published near-ATM vol grid for *underlier* (its equity ticker) as
+    ``{(tenor_months, moneyness_pct): iv_percent | None}`` over the reachable region
+    (3M/6M/12M x 90-110%). ``None`` marks a value BBG did not publish — callers must
+    not interpolate it. Returns an all-None grid on any failure. Never raises."""
+    keys = [(n, m) for n in _OVDV_TENOR_MONTHS for m in _OVDV_MONEYNESS]
+    if not underlier:
+        return {}
+    try:
+        with with_session() as query:
+            raw = query.bdp([underlier], [_ovdv_field(n, m) for n, m in keys])
+        df = _ensure_security_column(_to_pandas(raw))
+    except Exception as exc:
+        logger.warning("OVDV grid fetch for %s failed: %s", underlier, exc)
+        return {k: None for k in keys}
+    if df.empty:
+        return {k: None for k in keys}
+    match = df.loc[df["security"] == underlier]
+    rec = (match.iloc[0] if not match.empty else df.iloc[0])
+    out: dict = {}
+    for n, m in keys:
+        field = _ovdv_field(n, m)
+        v = rec.get(field) if field in rec.index else None
+        try:
+            out[(n, m)] = float(v) if (v is not None and float(v) == float(v)) else None
+        except (TypeError, ValueError):
+            out[(n, m)] = None
+    return out
+
+
 def fetch_option_chain(underlier: str) -> list[str]:
     """The listed option chain for *underlier* (its EQUITY bbg ticker) as a list
     of canonical option-ticker strings, e.g. ``'NES1 SW 07/03/26 C67 Equity'``.
