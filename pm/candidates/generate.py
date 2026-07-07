@@ -65,6 +65,7 @@ class Candidate:
     greeks: Optional[dict] = None
     breakevens: Optional[list] = None
     warnings: list = field(default_factory=list)
+    new_leg_delta: Optional[float] = None  # the new option leg's own per-contract delta
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +106,7 @@ def _option_leg(sc: SliceContract, qty, spot, *, curve, r_scalar, q, today, role
         "K": float(sc.strike), "expiry": sc.expiry, "T": T, "sigma": sigma,
         "style": "American", "qty": int(qty), "mid": mid, "r": float(r), "q": float(q),
         "priceable": bool(sigma is not None and T > 0), "position_id": sc.ticker,
-        "role": role,
+        "role": role, "delta": _num(sc.delta),
     }
 
 
@@ -147,10 +148,16 @@ def _price(legs, spot, today) -> dict:
 
 def _finish(objective, kind, description, legs, net_credit, spot, today) -> Candidate:
     res = _price(legs, spot, today)
+    # The new option leg's own delta (assignment proxy) — carried through for the
+    # defend-cut-delta ranking driver and the "new Δ" decision column. A single-option
+    # candidate (every roll, covered call, protective put) reports it; a two-option
+    # overlay (collar) leaves it None, having no single new-leg delta to name.
+    opt_legs = [lg for lg in legs if lg.get("opt_type") in ("Call", "Put")]
+    new_leg_delta = _num(opt_legs[0].get("delta")) if len(opt_legs) == 1 else None
     return Candidate(objective=objective, kind=kind, description=description, legs=legs,
                      net_credit=net_credit, economics=res.get("economics"),
                      greeks=res.get("greeks_now"), breakevens=res.get("breakevens"),
-                     warnings=list(res.get("warnings") or []))
+                     warnings=list(res.get("warnings") or []), new_leg_delta=new_leg_delta)
 
 
 # ---------------------------------------------------------------------------

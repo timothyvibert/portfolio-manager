@@ -450,6 +450,55 @@ def generate_slice_candidates(account: str, position_id: str, *, objectives=None
     return cands
 
 
+def rank_slice_candidates(account: str, position_id: str, *, objectives=None, cap: int = 15):
+    """Generate + price + rank the adjustment candidates for a held position, grouped
+    by objective. A pure, read-only derivation over already-loaded state: it reads the
+    account's client profile and the slice's IV+pp rows, ranks each objective's
+    candidates through ``pm.candidates.ranking`` (no Bloomberg, no state write beyond
+    caching the result on the option slice for reuse), and returns
+    ``{objective: [RankedCandidate, ...]}`` (or None). Render is M5's job."""
+    from datetime import date
+
+    cands = generate_slice_candidates(account, position_id, objectives=objectives, cap=cap)
+    if not cands:
+        return None
+    state = _RUNTIME.get("state")
+    if state is None:
+        return None
+    acc = state.accounts.get(account)
+    if acc is None:
+        return None
+    pos = next((p for p in acc.positions if p.position_id == position_id), None)
+    if pos is None:
+        return None
+
+    profile = getattr(acc, "client_profile", None)
+
+    # IV+pp rows + the held leg's Δ / DTE are available only on the option roll path
+    # (a stock overlay has no held option leg and no anchored slice); the ranker
+    # degrades cleanly when they are absent.
+    iv_pp = None
+    held = None
+    sl = None
+    if pos.asset_class == "option":
+        sl = pull_slice(account, position_id)
+        iv_pp = sl.get("iv_pp") if sl else None
+        held = {"delta": _held_option_delta(acc, pos),
+                "dte": (pos.expiry - date.today()).days if pos.expiry else None}
+
+    from pm.candidates.ranking import rank_candidates
+    by_objective: dict = {}
+    for c in cands:
+        by_objective.setdefault(c.objective, []).append(c)
+    ranked = {obj: rank_candidates(cs, objective=obj, client_profile=profile,
+                                   iv_pp=iv_pp, held=held)
+              for obj, cs in by_objective.items()}
+
+    if sl is not None:
+        sl["candidates_ranked"] = ranked
+    return ranked
+
+
 def _div_yield(acc: AccountState, underlier: str) -> float:
     row = _snapshot_underlying_row(acc, underlier)
     if row is None:
