@@ -34,10 +34,12 @@ from typing import Optional
 
 from pm.candidates.generate import (
     ADD_HEDGE,
+    COSTLESS,
     DEFEND_CUT_DELTA,
     EXTEND_DURATION,
     MAX_PREMIUM,
     ROLL_FOR_CREDIT,
+    ROLL_UP_OUT,
 )
 
 # Combination weights + the coverage-confidence damping on the client nudge.
@@ -139,14 +141,41 @@ def _avg_rank_percentile(values) -> list:
 # Objective driver + reason
 # ---------------------------------------------------------------------------
 
+# Tenor weight for the up-and-out relief driver: added days scaled into strike-$ units.
+_OUT_W = 0.05
+
+
+def _new_strike(cand) -> Optional[float]:
+    for lg in (getattr(cand, "legs", None) or []):
+        if lg.get("opt_type") in ("Call", "Put") and lg.get("K") is not None:
+            return _num(lg.get("K"))
+    return None
+
+
+def _relief(cand, held) -> Optional[float]:
+    """Up-and-out relief — strike increase plus scaled added tenor. The driver for the
+    Roll up & out and Costless objectives (higher = more room bought)."""
+    nk = _new_strike(cand)
+    hk = _num((held or {}).get("strike"))
+    dte = _num((getattr(cand, "economics", None) or {}).get("dte"))
+    hdte = _num((held or {}).get("dte"))
+    strike_relief = (nk - hk) if (nk is not None and hk is not None) else 0.0
+    tenor = _OUT_W * ((dte - hdte) if (dte is not None and hdte is not None) else 0.0)
+    return strike_relief + tenor
+
+
 def _driver(cand, objective, held) -> Optional[float]:
     """The single objective driver, oriented so higher is always better."""
-    if objective in (ROLL_FOR_CREDIT, MAX_PREMIUM):
-        return _num(getattr(cand, "net_credit", None))              # credit collected
-    if objective == ADD_HEDGE:
-        # Cheaper / financed protection ranks higher; a net-credit collar beats a
-        # net-debit outright put. (net_credit is negative for a paid-for hedge.)
+    if objective == MAX_PREMIUM:
+        # Credit per dollar of cap surrendered (the new strike) — not raw credit.
+        nc = _num(getattr(cand, "net_credit", None))
+        k = _new_strike(cand)
+        return (nc / k) if (nc is not None and k) else nc
+    if objective in (ROLL_FOR_CREDIT, ADD_HEDGE):
+        # roll-for-credit = raw credit collected; add-hedge = cheaper/financed protection.
         return _num(getattr(cand, "net_credit", None))
+    if objective in (ROLL_UP_OUT, COSTLESS):
+        return _relief(cand, held)
     if objective == EXTEND_DURATION:
         return _num((getattr(cand, "economics", None) or {}).get("dte"))   # more tenor
     if objective == DEFEND_CUT_DELTA:
@@ -172,6 +201,12 @@ def _objective_reason(cand, objective, driver, pct, held) -> Optional[str]:
         held_dte = (held or {}).get("dte")
         added = f", +{dte - int(held_dte)}d added" if held_dte is not None else ""
         return f"{dte}d to expiry{added} ({_pctl(pct)})"
+    if objective in (ROLL_UP_OUT, COSTLESS):
+        nk = _new_strike(cand)
+        hk = _num((held or {}).get("strike"))
+        relief = f" +{nk - hk:g} strike" if (nk is not None and hk is not None) else ""
+        lead = "costless roll" if objective == COSTLESS else "up & out"
+        return f"{lead}{relief} ({_pctl(pct)})"
     if objective == DEFEND_CUT_DELTA:
         nd = _num(getattr(cand, "new_leg_delta", None))
         hd = _num((held or {}).get("delta"))

@@ -52,6 +52,12 @@ OPTION_SNAPSHOT_FIELDS = [
     "GAMMA",
     "VEGA",
     "RHO",
+    # Per-contract liquidity for the scanner chain table. OPEN_INT / PX_VOLUME are the
+    # standard reference mnemonics; the terminal field for a given entitlement is
+    # confirmed by a live probe, and _normalize_option_fields coalesces any alternate
+    # column (OPT_OPEN_INTEREST / VOLUME / VOLM) that a request adds.
+    "OPEN_INT",
+    "PX_VOLUME",
     # Exercise style ('American' / 'European') — drives the pricing-engine style
     # key (pm.pricing registry). Read per leg; the scenario rung never defaults it.
     "OPTION_EXERCISE_TYPE_REALTIME",
@@ -833,6 +839,8 @@ _OPTION_SNAPSHOT_OUTPUT_COLS = [
     "GAMMA",
     "VEGA",
     "RHO",
+    "OPEN_INT",
+    "PX_VOLUME",
     "OPTION_EXERCISE_TYPE_REALTIME",
     "dte",
     "delta_mid",
@@ -841,6 +849,8 @@ _OPTION_SNAPSHOT_OUTPUT_COLS = [
     "vega",
     "rho",
     "iv_mid",
+    "oi",
+    "volume",
     "style",
 ]
 
@@ -895,6 +905,8 @@ def _normalize_option_fields(df: pd.DataFrame) -> pd.DataFrame:
         "GAMMA",
         "VEGA",
         "RHO",
+        "OPEN_INT",
+        "PX_VOLUME",
     ]
     for field in numeric_fields:
         if field in df.columns:
@@ -918,6 +930,19 @@ def _normalize_option_fields(df: pd.DataFrame) -> pd.DataFrame:
     if "IVOL" in df.columns:
         iv_mid = iv_mid.fillna(pd.to_numeric(df.get("IVOL"), errors="coerce"))
     df["iv_mid"] = iv_mid
+    # Per-contract open interest / volume, coalesced from whichever mnemonic the
+    # terminal populates (OPEN_INT / PX_VOLUME the primaries; alternates picked up
+    # if a request adds them). Absent everywhere -> NaN, which the view shows as '—'.
+    oi = pd.to_numeric(df.get("OPEN_INT"), errors="coerce")
+    for alt in ("OPT_OPEN_INTEREST", "OPEN_INTEREST"):
+        if alt in df.columns:
+            oi = oi.fillna(pd.to_numeric(df.get(alt), errors="coerce"))
+    df["oi"] = oi
+    volume = pd.to_numeric(df.get("PX_VOLUME"), errors="coerce")
+    for alt in ("VOLUME", "VOLM"):
+        if alt in df.columns:
+            volume = volume.fillna(pd.to_numeric(df.get(alt), errors="coerce"))
+    df["volume"] = volume
     # Exercise style normalized to the engine's registry key ('American' /
     # 'European'); anything BBG doesn't classify becomes None (the adapter then
     # defaults + warns rather than mis-routing).

@@ -32,6 +32,7 @@ def build_app() -> dash.Dash:
     from pm.ui.blotter.callbacks import register_callbacks
     from pm.ui.deepdive.callbacks import register_deepdive_callbacks
     from pm.ui.drawers.payoff import register_payoff_callbacks
+    from pm.ui.drawers.scanner import register_comparison_callbacks, register_scanner_callbacks
 
     app = dash.Dash(__name__, suppress_callback_exceptions=True)
     app.title = "Portfolio Manager"
@@ -39,6 +40,8 @@ def build_app() -> dash.Dash:
     register_callbacks(app)
     register_deepdive_callbacks(app)
     register_payoff_callbacks(app)
+    register_scanner_callbacks(app)
+    register_comparison_callbacks(app)
     return app
 
 

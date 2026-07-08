@@ -26,13 +26,18 @@ logger = logging.getLogger(__name__)
 
 _MULT = 100
 _CAP_DEFAULT = 15
+# |net debit/credit| within this per-share $ reads "costless" (× 100 × contracts).
+_COSTLESS_PER_SHARE = 0.05
 
 ROLL_FOR_CREDIT = "roll-for-credit"
 EXTEND_DURATION = "extend-duration"
 DEFEND_CUT_DELTA = "defend-cut-delta"
 MAX_PREMIUM = "max-premium"
 ADD_HEDGE = "add-hedge"
-_DEFAULT_ROLL_OBJECTIVES = (ROLL_FOR_CREDIT, EXTEND_DURATION, DEFEND_CUT_DELTA)
+ROLL_UP_OUT = "roll-up-out"
+COSTLESS = "costless"
+_DEFAULT_ROLL_OBJECTIVES = (ROLL_FOR_CREDIT, EXTEND_DURATION, DEFEND_CUT_DELTA,
+                            ROLL_UP_OUT, COSTLESS, MAX_PREMIUM)
 
 
 def _num(v) -> Optional[float]:
@@ -224,6 +229,47 @@ def _select_roll(objective, held, held_qty, held_mid, held_delta, later, cap) ->
                   if c.delta is not None and abs(c.delta) < abs(held_delta)]
         scored.sort(key=lambda x: -x[0])
         return [(c, _roll_kind(held, c)) for _, c in scored[:cap]]
+
+    if objective == MAX_PREMIUM:
+        # Roll to collect premium — the credit rolls; the ranker orders by premium per
+        # dollar of cap (a distinct lens from raw credit).
+        scored = []
+        for c in later:
+            nm = _num(c.mid)
+            if nm is None or hm is None:
+                continue
+            nc = held_qty * (hm - nm) * _MULT
+            if nc > 0:
+                scored.append((nc, c))
+        scored.sort(key=lambda x: -x[0])
+        return [(c, _roll_kind(held, c)) for _, c in scored[:cap]]
+
+    if objective == ROLL_UP_OUT:
+        # Raise the strike AND extend — the ITM short-call workflow. The cap keeps the
+        # cheapest (near-costless) up-and-out rolls; the ranker orders by strike relief.
+        picks = []
+        for c in later:
+            if c.strike <= held.strike:
+                continue
+            nm = _num(c.mid)
+            cost = (abs(held_qty * (hm - nm) * _MULT)
+                    if (hm is not None and nm is not None) else float("inf"))
+            picks.append((cost, c))
+        picks.sort(key=lambda x: x[0])
+        return [(c, _roll_kind(held, c)) for _, c in picks[:cap]]
+
+    if objective == COSTLESS:
+        band = _COSTLESS_PER_SHARE * _MULT * max(abs(held_qty), 1)
+        picks = []
+        for c in later:
+            nm = _num(c.mid)
+            if nm is None or hm is None:
+                continue
+            if abs(held_qty * (hm - nm) * _MULT) <= band:
+                relief = (c.strike - held.strike) + 0.05 * (c.expiry - held.expiry).days
+                picks.append((relief, c))
+        picks.sort(key=lambda x: -x[0])
+        return [(c, _roll_kind(held, c)) for _, c in picks[:cap]]
 
     return []
 

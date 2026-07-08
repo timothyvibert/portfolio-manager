@@ -79,6 +79,25 @@ def _ids_from_cell(cell):
     return parts[0], pid, underlying
 
 
+def _short_leg_pid(acc_state, structure_id):
+    """The structure's roll-target leg — its short option leg (short call preferred,
+    then short put), so the Payoff|Scanner toggle anchors the scan on the contract the
+    desk would actually roll. None when no short option leg is present."""
+    s = next((x for x in (getattr(acc_state, "structures", None) or [])
+              if x.structure_id == structure_id), None)
+    if s is None:
+        return None
+    legs = getattr(s, "legs", None) or []
+    for want in ("short_call", "short_put"):
+        for lg in legs:
+            if getattr(lg, "role", None) == want:
+                return lg.position_id
+    for lg in legs:
+        if "short" in (getattr(lg, "role", "") or ""):
+            return lg.position_id
+    return None
+
+
 def register_deepdive_callbacks(app: dash.Dash) -> None:
 
     # ---- Picker / refresh / tab-switch → repopulate the deep-dive sections --
@@ -241,12 +260,15 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
                 rows = build_structure_rows(acc_state, state, ex)
                 return no_update, no_update, no_update, ex, rows
             if prefix == "structure":
-                # M3: the parent structure row opens the payoff drill-in (economics +
+                # The parent structure row opens the payoff drill-in (economics +
                 # scenario, structure-aware). Resolution (Confirm/Reject/Choose) stays on
                 # the structure-detail modal, reachable from the contention/leg/sub rows.
+                # Carry the roll-target leg's position_id so the Payoff|Scanner toggle can
+                # anchor its scan on the structure's short option leg.
                 body = render_payoff(account, structure_id=sid)
                 return (body, _OPEN_CLS,
-                        {"view": "payoff", "account": account, "structure_id": sid},
+                        {"view": "payoff", "account": account, "structure_id": sid,
+                         "position_id": _short_leg_pid(acc_state, sid)},
                         no_update, no_update)
             body = render_structure_detail(account, sid, state)
             return (body, _OPEN_CLS,
@@ -263,7 +285,8 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
         body = _render_body(state, account, position_id, underlying, view)
         return (body, _OPEN_CLS,
                 {"view": view, "account": account, "position_id": position_id,
-                 "underlying": underlying, "source": "deepdive-positions"},
+                 "underlying": underlying, "source": "deepdive-positions",
+                 "structure_id": sa.structure_for_position(state, account, position_id)},
                 no_update, no_update)
 
     # ---- Scenario: live dial / preset / drill -> price_scenario recompute ----
@@ -355,4 +378,6 @@ def register_deepdive_callbacks(app: dash.Dash) -> None:
         if pos is None:
             return no_update, no_update, no_update
         body = render_payoff(acct, position_id=pos.position_id)
-        return body, _OPEN_CLS, {"view": "payoff", "account": acct, "position_id": pos.position_id}
+        return body, _OPEN_CLS, {"view": "payoff", "account": acct,
+                                 "position_id": pos.position_id,
+                                 "structure_id": sa.structure_for_position(state, acct, pos.position_id)}

@@ -144,9 +144,12 @@ def payoff_figure(result, show_components=False):
             marker=dict(symbol="diamond", size=12, color=_AMBER, line=dict(color="white", width=1.5)),
             hovertemplate="shocked %{x:,.2f}<extra></extra>"))
     fig.update_layout(
+        # No fixed height — the container (.payoff-graph, height:100%) governs the size, so
+        # the initial render and every slider recompute produce the same stretched chart.
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        autosize=True,
         font=dict(family=_FONT, color=_CHARCOAL, size=11),
-        margin=dict(l=58, r=12, t=14, b=40), height=340,
+        margin=dict(l=58, r=12, t=14, b=40),
         legend=dict(orientation="h", y=1.12, x=0, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
         xaxis=dict(title=f"{result.underlying or 'underlying'} price", gridcolor=_GRID,
                    zeroline=False),

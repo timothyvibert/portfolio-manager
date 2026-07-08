@@ -178,6 +178,47 @@ def price_payoff(
     return structure_payoff(state, acc, target, shock=shock)
 
 
+def scanner_candidate(account: str, position_id: str, objective: str, rank: int):
+    """The cached ranked scanner candidate at ``(objective, rank)`` for a held position,
+    or None. A pure read of the slice the scanner already pulled + ranked."""
+    state = _RUNTIME.get("state")
+    if state is None:
+        return None
+    sl = pull_slice(account, position_id)          # cache hit after the scan
+    if sl is None:
+        return None
+    ranked = (sl.get("candidates_ranked") or {}).get(objective) or []
+    return next((r for r in ranked if getattr(r, "rank", None) == rank), None)
+
+
+def price_candidate(account: str, position_id: str, objective: str, rank: int, *, shock=None):
+    """The candidate side of the current-vs-candidate comparison — a read-only payoff
+    reprice of a ranked candidate's resulting position under a shock. Prices the
+    candidate's engine legs through the pure ``compute_payoff`` (the same engine the
+    structure payoff wraps) at the SLICE's spot, so the candidate curve shares the
+    current position's grid. No Bloomberg, no reload, no ``_RUNTIME`` write, no engine
+    change. Returns the ``compute_payoff`` dict or None."""
+    rc = scanner_candidate(account, position_id, objective, rank)
+    if rc is None:
+        return None
+    sl = pull_slice(account, position_id)
+    spot = sl.get("spot") if sl else None
+    cand = getattr(rc, "candidate", None)
+    legs = getattr(cand, "legs", None)
+    if spot is None or not (spot > 0) or not legs:
+        return None
+    from datetime import date
+    from pm.candidates.generate import _build_tier1
+    from pm.risk.payoff import compute_payoff
+    try:
+        tier1 = _build_tier1(legs, date.today())
+        return compute_payoff(legs, float(spot), tier1, shock=shock)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("price_candidate failed for %s", position_id)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # On-demand option-chain slice pull (the scanner's data layer).
 # A SANCTIONED owned-state WRITE path — like resolve_structure / suppress_alert,
@@ -402,7 +443,8 @@ def _spot_slice_df(state: PortfolioState, underlier: str, spot: float):
     return fetch_option_snapshots(tickers) if tickers else None
 
 
-def generate_slice_candidates(account: str, position_id: str, *, objectives=None, cap: int = 15):
+def generate_slice_candidates(account: str, position_id: str, *, objectives=None, cap: int = 15,
+                              n_expiries: int = 3):
     """Generate + price the adjustment candidates for a held position — rolls for a held
     option, single-leg overlays for held stock. Attaches the priced candidates to the
     slice cache entry and returns them (or None)."""
@@ -423,7 +465,7 @@ def generate_slice_candidates(account: str, position_id: str, *, objectives=None
     cands = []
     try:
         if pos.asset_class == "option":
-            sl = pull_slice(account, position_id)
+            sl = pull_slice(account, position_id, n_expiries=n_expiries)
             if sl is None:
                 return None
             q = _div_yield(acc, sl["underlier"])
@@ -440,6 +482,10 @@ def generate_slice_candidates(account: str, position_id: str, *, objectives=None
             if spot is None or basis is None or not pos.quantity:
                 return []
             df = _spot_slice_df(state, pos.bbg_ticker, spot)
+            # Retain the overlay slice so the scanner chain table can read each
+            # candidate's contract liquidity (the option-roll path keeps its slice; the
+            # overlay path builds a transient frame, so stash it under the position).
+            state.slice_cache.setdefault("overlay_dfs", {})[position_id] = df
             q = _div_yield(acc, pos.bbg_ticker)
             cands = overlays_from_slice(df, spot, int(pos.quantity), basis,
                                         risk_free_curve=curve, risk_free_rate=rfr,
@@ -450,7 +496,8 @@ def generate_slice_candidates(account: str, position_id: str, *, objectives=None
     return cands
 
 
-def rank_slice_candidates(account: str, position_id: str, *, objectives=None, cap: int = 15):
+def rank_slice_candidates(account: str, position_id: str, *, objectives=None, cap: int = 15,
+                          n_expiries: int = 3):
     """Generate + price + rank the adjustment candidates for a held position, grouped
     by objective. A pure, read-only derivation over already-loaded state: it reads the
     account's client profile and the slice's IV+pp rows, ranks each objective's
@@ -459,9 +506,6 @@ def rank_slice_candidates(account: str, position_id: str, *, objectives=None, ca
     ``{objective: [RankedCandidate, ...]}`` (or None). Render is M5's job."""
     from datetime import date
 
-    cands = generate_slice_candidates(account, position_id, objectives=objectives, cap=cap)
-    if not cands:
-        return None
     state = _RUNTIME.get("state")
     if state is None:
         return None
@@ -470,6 +514,17 @@ def rank_slice_candidates(account: str, position_id: str, *, objectives=None, ca
         return None
     pos = next((p for p in acc.positions if p.position_id == position_id), None)
     if pos is None:
+        return None
+    # Free pill switches: an option scan's full ranking (all objectives) is cached on the
+    # slice at pull time, so a pill change reads it rather than re-generating + re-pricing.
+    if pos.asset_class == "option":
+        cached_sl = pull_slice(account, position_id, n_expiries=n_expiries)
+        if cached_sl and cached_sl.get("candidates_ranked"):
+            return cached_sl["candidates_ranked"]
+
+    cands = generate_slice_candidates(account, position_id, objectives=objectives, cap=cap,
+                                      n_expiries=n_expiries)
+    if not cands:
         return None
 
     profile = getattr(acc, "client_profile", None)
@@ -481,10 +536,11 @@ def rank_slice_candidates(account: str, position_id: str, *, objectives=None, ca
     held = None
     sl = None
     if pos.asset_class == "option":
-        sl = pull_slice(account, position_id)
+        sl = pull_slice(account, position_id, n_expiries=n_expiries)
         iv_pp = sl.get("iv_pp") if sl else None
         held = {"delta": _held_option_delta(acc, pos),
-                "dte": (pos.expiry - date.today()).days if pos.expiry else None}
+                "dte": (pos.expiry - date.today()).days if pos.expiry else None,
+                "strike": pos.strike}
 
     from pm.candidates.ranking import rank_candidates
     by_objective: dict = {}
@@ -497,6 +553,115 @@ def rank_slice_candidates(account: str, position_id: str, *, objectives=None, ca
     if sl is not None:
         sl["candidates_ranked"] = ranked
     return ranked
+
+
+def scanner_view_data(account: str, position_id: str, *, objectives=None, cap: int = 15,
+                      refresh: bool = False, n_expiries: int = 3) -> Optional[dict]:
+    """Read-only packaging for the scanner drawer: the ranked adjustment candidates for a
+    held position, plus the slice metadata the view stamps. Delegates to
+    ``rank_slice_candidates`` (the sanctioned on-demand pull + rank); ``refresh`` re-pulls
+    the option slice first. Returns ``{ranked, pulled_at, spot, underlier, kind}`` or
+    ``None`` (no state / position, Bloomberg off, or nothing to scan). The pull is the
+    only market I/O — the view itself never recomputes."""
+    state = _RUNTIME.get("state")
+    if state is None:
+        return None
+    acc = state.accounts.get(account)
+    if acc is None:
+        return None
+    pos = position_by_id(state, account, position_id)
+    if pos is None:
+        return None
+
+    # A refresh re-snapshots the option slice (the sanctioned write path); the overlay
+    # path has no cached slice, so a refresh simply re-generates from a fresh snapshot.
+    if refresh and pos.asset_class == "option":
+        pull_slice(account, position_id, refresh=True, n_expiries=n_expiries)
+
+    ranked = rank_slice_candidates(account, position_id, objectives=objectives, cap=cap,
+                                   n_expiries=n_expiries)
+    if ranked is None:
+        return None
+
+    pulled_at = spot = underlier = None
+    df = surface = iv_pp = None
+    if pos.asset_class == "option":
+        sl = pull_slice(account, position_id, n_expiries=n_expiries)   # cache hit after the rank
+        if sl:
+            pulled_at, spot, underlier, df = (sl.get("pulled_at"), sl.get("spot"),
+                                              sl.get("underlier"), sl.get("df"))
+            surface, iv_pp = sl.get("surface"), sl.get("iv_pp")
+    else:
+        underlier = pos.bbg_ticker
+        spot = _spot_from_snapshot(acc, pos.bbg_ticker)
+        df = state.slice_cache.get("overlay_dfs", {}).get(position_id)
+
+    metrics = _contract_metrics(df)
+    return {"ranked": ranked, "pulled_at": pulled_at, "spot": spot,
+            "underlier": underlier, "kind": pos.asset_class,
+            "contract_metrics": metrics, "surface": surface, "iv_pp": iv_pp,
+            "contracts": _slice_contracts(df, iv_pp, metrics),
+            "held_strike": getattr(pos, "strike", None)}
+
+
+def _slice_contracts(df, iv_pp, metrics) -> list:
+    """The full cached slice as browse rows — every snapshotted contract with its strike,
+    expiry, right, liquidity, IV and (option path) fitted IV / IV+pp. The option-roll path
+    joins the IV+pp rows; the overlay path parses the ticker (no fitted surface)."""
+    out: list = []
+    if iv_pp:
+        for r in iv_pp:
+            m = metrics.get(r.get("ticker"), {})
+            out.append({"ticker": r.get("ticker"), "strike": r.get("strike"),
+                        "expiry": r.get("expiry"), "right": r.get("right"),
+                        "iv": r.get("iv"), "iv_fitted": r.get("iv_fitted"),
+                        "iv_excess": r.get("iv_excess"), "in_fit": r.get("in_fit"),
+                        "bid": m.get("bid"), "ask": m.get("ask"), "mid": m.get("mid"),
+                        "delta": m.get("delta"), "oi": m.get("oi")})
+    elif df is not None and not getattr(df, "empty", True):
+        from pm.core.ticker_utils import parse_option_description
+        for tk, m in metrics.items():
+            p = parse_option_description(str(tk)) or {}
+            out.append({"ticker": tk, "strike": p.get("strike"), "expiry": p.get("expiry"),
+                        "right": p.get("right"), "iv": m.get("iv"), "iv_fitted": None,
+                        "iv_excess": None, "in_fit": False, "bid": m.get("bid"),
+                        "ask": m.get("ask"), "mid": m.get("mid"), "delta": m.get("delta"),
+                        "oi": m.get("oi")})
+    return out
+
+
+def structure_for_position(state, account: str, position_id: str):
+    """The non-rejected structure whose legs include this position (confirmed preferred
+    over proposed), or None. Lets a popup opened on an alert/holding price the enclosing
+    covered structure in its Payoff/Scanner tabs, falling back to the standalone leg."""
+    if state is None:
+        return None
+    acc = state.accounts.get(account)
+    if acc is None:
+        return None
+    hits = [s for s in (getattr(acc, "structures", None) or [])
+            if getattr(s, "status", None) != "rejected"
+            and any(getattr(lg, "position_id", None) == position_id for lg in (s.legs or []))]
+    if not hits:
+        return None
+    hits.sort(key=lambda s: 0 if getattr(s, "status", None) == "confirmed" else 1)
+    return hits[0].structure_id
+
+
+def _contract_metrics(df) -> dict:
+    """Per-ticker liquidity/greeks for the chain table, keyed by option ticker (the
+    slice df index): bid/ask/mid/iv/delta/oi/volume. Empty when there is no slice."""
+    out: dict = {}
+    if df is None or getattr(df, "empty", True):
+        return out
+    for tk, row in df.iterrows():
+        out[str(tk)] = {
+            "bid": coerce_float(row.get("BID")), "ask": coerce_float(row.get("ASK")),
+            "mid": coerce_float(row.get("PX_MID")), "iv": coerce_float(row.get("iv_mid")),
+            "delta": coerce_float(row.get("delta_mid")), "oi": coerce_float(row.get("oi")),
+            "volume": coerce_float(row.get("volume")),
+        }
+    return out
 
 
 def _div_yield(acc: AccountState, underlier: str) -> float:

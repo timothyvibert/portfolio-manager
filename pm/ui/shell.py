@@ -34,12 +34,20 @@ def _drawer_root() -> html.Div:
         html.Div(className="drawer-panel", children=[
             html.Div(className="drawer-headerbar", children=[
                 html.Div(className="drawer-headerbar-left", children=[
-                    # Alert | Tearsheet segmented toggle.
+                    # Segmented view toggle. The visible buttons depend on which popup
+                    # family is open (set by _nav_and_toggle): a position popup shows
+                    # Alert | Tearsheet | Scanner; a payoff popup shows Payoff | Scanner.
+                    # DOM order keeps each family's visible set contiguous and correctly
+                    # ordered once the others are hidden.
                     html.Div(className="view-toggle", children=[
                         html.Button("Alert", id="view-alert", n_clicks=0,
                                     className="view-toggle-btn"),
                         html.Button("Tearsheet", id="view-tearsheet", n_clicks=0,
                                     className="view-toggle-btn"),
+                        html.Button("Payoff", id="view-payoff", n_clicks=0,
+                                    className="view-toggle-btn view-toggle-btn-hidden"),
+                        html.Button("Scanner", id="view-scanner", n_clicks=0,
+                                    className="view-toggle-btn view-toggle-btn-hidden"),
                     ]),
                     # Prev/next position nav — visible in both modes when open.
                     html.Div(id="drawer-nav", className="drawer-nav drawer-nav-hidden",

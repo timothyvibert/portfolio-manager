@@ -54,11 +54,20 @@ def _underlying_for(state, account: str, position_id: str) -> str:
     return ""
 
 
-def _render_body(state, account: str, position_id: str, underlying: str, view: str):
-    """Render the modal body for the active view (Alert = all alerts on the
-    position, stacked; Tearsheet = the per-underlying signal sheet)."""
+def _render_body(state, account: str, position_id: str, underlying: str, view: str,
+                 structure_id=None):
+    """Render the drawer body for the active view: Alert = all alerts on the position,
+    stacked; Tearsheet = the per-underlying signal sheet; Scanner = the ranked adjustment
+    candidates; Payoff = the structure/position economics. Lazy imports keep the drawer
+    modules off this module's import path."""
     if view == "tearsheet":
         return render_signal_sheet(account, underlying, state)
+    if view == "scanner":
+        from pm.ui.drawers.scanner import render_scanner
+        return render_scanner(account, position_id=position_id, structure_id=structure_id)
+    if view == "payoff":
+        from pm.ui.drawers.payoff import render_payoff
+        return render_payoff(account, structure_id=structure_id, position_id=position_id)
     return render_alerts(account, position_id, state)
 
 
@@ -218,28 +227,33 @@ def register_callbacks(app: dash.Dash) -> None:
         body = _render_body(state, account, position_id, underlying, view)
         return body, _OPEN_CLS, {"view": view, "account": account,
                                  "position_id": position_id, "underlying": underlying,
-                                 "source": "blotter"}
+                                 "source": "blotter",
+                                 "structure_id": sa.structure_for_position(state, account, position_id)}
 
-    # 2) Alert | Tearsheet view toggle — swaps the body, keeps the position.
+    # 2) View toggle — swaps the body within the open popup's family, keeping the
+    #    anchor. Position family: Alert|Tearsheet|Scanner. Payoff family: Payoff|Scanner.
     @app.callback(
         Output("drawer-body", "children", allow_duplicate=True),
         Output("drawer-state", "data", allow_duplicate=True),
         Input("view-alert", "n_clicks"),
         Input("view-tearsheet", "n_clicks"),
+        Input("view-payoff", "n_clicks"),
+        Input("view-scanner", "n_clicks"),
         State("drawer-state", "data"),
         prevent_initial_call=True,
     )
-    def _toggle_view(_a, _t, drawer_state):
+    def _switch_view(_a, _t, _p, _s, drawer_state):
         state = sa.get_state()
         ds = drawer_state or {}
-        if state is None or ds.get("view") is None or not ds.get("position_id"):
+        target = {"view-alert": "alert", "view-tearsheet": "tearsheet",
+                  "view-payoff": "payoff", "view-scanner": "scanner"}.get(ctx.triggered_id)
+        if state is None or target is None or target == ds.get("view"):
             return no_update, no_update
-        view = "alert" if ctx.triggered_id == "view-alert" else "tearsheet"
-        if view == ds.get("view"):
-            return no_update, no_update
-        body = _render_body(state, ds["account"], ds["position_id"],
-                            ds.get("underlying", ""), view)
-        return body, {**ds, "view": view}
+        # All four tabs are always present on the unified popup, so any button is a valid
+        # target; each tab renders from the shared anchor (position_id + optional structure).
+        body = _render_body(state, ds.get("account"), ds.get("position_id"),
+                            ds.get("underlying", ""), target, structure_id=ds.get("structure_id"))
+        return body, {**ds, "view": target}
 
     # 3) Prev/Next: step POSITION-to-position in the visible (filter+sort)
     #    order (virtualRowData = consolidated rows). View mode persists.
@@ -275,7 +289,8 @@ def register_callbacks(app: dash.Dash) -> None:
         body = _render_body(state, account, position_id, underlying, view)
         return body, _OPEN_CLS, {"view": view, "account": account,
                                  "position_id": position_id, "underlying": underlying,
-                                 "source": ds.get("source", "blotter")}
+                                 "source": ds.get("source", "blotter"),
+                                 "structure_id": sa.structure_for_position(state, account, position_id)}
 
     # ---- Close drawer (close button or overlay click) ---------------------
     @app.callback(
@@ -298,6 +313,8 @@ def register_callbacks(app: dash.Dash) -> None:
         Output("drawer-pos", "children"),
         Output("view-alert", "className"),
         Output("view-tearsheet", "className"),
+        Output("view-payoff", "className"),
+        Output("view-scanner", "className"),
         Input("drawer-state", "data"),
         State("blotter-grid", "virtualRowData"),
         State("deepdive-positions-grid", "virtualRowData"),
@@ -306,19 +323,26 @@ def register_callbacks(app: dash.Dash) -> None:
     def _nav_and_toggle(drawer_state, blotter_rows, dd_pos_rows):
         ds = drawer_state or {}
         view = ds.get("view")
-        # The structure modal view has no position prev/next or Alert|Tearsheet
-        # toggle — hide both. (view is None when the modal is closed.)
-        if view not in ("alert", "tearsheet"):
-            return ("drawer-nav drawer-nav-hidden", True, True, "",
-                    "view-toggle-btn view-toggle-btn-hidden",
-                    "view-toggle-btn view-toggle-btn-hidden")
-        visible_rows = _visible_rows_for_source(
-            ds.get("source"), blotter_rows, dd_pos_rows) or []
-        text, prev_dis, next_dis = nav_display(
-            visible_rows, ds.get("account"), ds.get("position_id"))
-        alert_cls = "view-toggle-btn" + (" view-toggle-btn-active" if view == "alert" else "")
-        tear_cls = "view-toggle-btn" + (" view-toggle-btn-active" if view == "tearsheet" else "")
-        return "drawer-nav", prev_dis, next_dis, text, alert_cls, tear_cls
+        HID = "view-toggle-btn view-toggle-btn-hidden"
+        NAV_HID = "drawer-nav drawer-nav-hidden"
+
+        def on(name):
+            return "view-toggle-btn" + (" view-toggle-btn-active" if view == name else "")
+
+        # The unified four-tab popup: Alert | Tearsheet | Payoff | Scanner, all present and
+        # anchored to the position. Prev/next steps positions on Alert/Tearsheet only.
+        if view in ("alert", "tearsheet", "payoff", "scanner"):
+            if view in ("alert", "tearsheet"):
+                rows = _visible_rows_for_source(ds.get("source"), blotter_rows, dd_pos_rows) or []
+                text, prev_dis, next_dis = nav_display(rows, ds.get("account"), ds.get("position_id"))
+                nav_cls = "drawer-nav"
+            else:
+                text, prev_dis, next_dis, nav_cls = "", True, True, NAV_HID
+            return (nav_cls, prev_dis, next_dis, text,
+                    on("alert"), on("tearsheet"), on("payoff"), on("scanner"))
+
+        # Structure-detail view (Confirm/Reject) or closed: no toggle, no nav.
+        return (NAV_HID, True, True, "", HID, HID, HID, HID)
 
     # ---- Escape-to-close: one-time clientside keydown listener -------------
     # Attaches a guarded document listener once (drawer-root.id fires once on
@@ -402,9 +426,12 @@ def register_callbacks(app: dash.Dash) -> None:
             return no_update, no_update, no_update
 
         ds = drawer_state or {}
-        body = render_alerts(ds.get("account", account), ds.get("position_id", pid), state)
         blotter_rows = consolidate_fires_to_rows(sa.all_fires(state), state)
         dd_rows = _dd_grid_rows(state, dd_account, pos_view, expanded)
+        # Re-render the drawer body only when the Alert view is showing; a suppress must
+        # never overwrite another tab (e.g. the scanner) sharing the drawer body.
+        body = (render_alerts(ds.get("account", account), ds.get("position_id", pid), state)
+                if ds.get("view") == "alert" else no_update)
         return body, blotter_rows, dd_rows
 
     # Reveal the inline date picker when its sibling Snooze dropdown selects

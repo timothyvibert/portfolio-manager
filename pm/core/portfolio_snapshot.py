@@ -241,7 +241,8 @@ def _empty_options_df() -> pd.DataFrame:
         "BID", "ASK", "PX_MID", "PX_LAST", "IVOL_MID", "IVOL",
         "DAYS_TO_EXPIRATION", "DAYS_EXPIRE", "OPT_STRIKE_PX", "OPT_PUT_CALL",
         "DELTA_MID_RT", "THETA", "THETA_MID", "GAMMA", "VEGA", "RHO",
-        "OPTION_EXERCISE_TYPE_REALTIME",
-        "dte", "delta_mid", "theta", "gamma", "vega", "rho", "iv_mid", "style",
+        "OPEN_INT", "PX_VOLUME", "OPTION_EXERCISE_TYPE_REALTIME",
+        "dte", "delta_mid", "theta", "gamma", "vega", "rho", "iv_mid",
+        "oi", "volume", "style",
     ]
     return pd.DataFrame(columns=cols)

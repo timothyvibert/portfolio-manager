@@ -1514,10 +1514,12 @@ html, body {
 }
 .payoff-radio { display: inline-flex; gap: 10px; font-size: 12px; align-items: center; }
 
-.payoff-body { display: flex; gap: 18px; align-items: flex-start; }
-.payoff-graph-wrap { flex: 1 1 60%; min-width: 0; }
-.payoff-graph { width: 100%; }
-.payoff-side { flex: 1 1 40%; min-width: 220px; display: flex; flex-direction: column; gap: 16px; }
+/* The chart takes the room; the economics/greeks column is narrowed, and the chart
+   stretches so its bottom aligns with the bottom of the right-hand panel. */
+.payoff-body { display: flex; gap: 18px; align-items: stretch; }
+.payoff-graph-wrap { flex: 1 1 auto; min-width: 0; display: flex; }
+.payoff-graph { width: 100%; height: 100%; min-height: 380px; }
+.payoff-side { flex: 0 0 300px; min-width: 260px; display: flex; flex-direction: column; gap: 16px; }
 
 .payoff-block-title {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
@@ -1550,3 +1552,116 @@ html, body {
     .payoff-body { flex-direction: column; }
     .payoff-graph-wrap, .payoff-side { flex-basis: auto; width: 100%; }
 }
+
+/* Scanner drawer (view='scanner') — the ranked roll/overlay candidates for a held
+   position. Dense table (the am-table look), neutral chrome; sign colour only on the
+   P&L numbers, restrained amber for the recommended row. */
+.scanner-content { padding: 14px 18px 18px; }
+
+.scanner-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.scanner-head-left { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.scanner-identity { font-size: 15px; font-weight: 600; color: var(--pm-charcoal);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scanner-stamp { font-size: 11.5px; color: var(--pm-grey-500); font-style: italic; white-space: nowrap; }
+.scanner-head-btns { display: flex; gap: 6px; }
+.scanner-refresh-btn {
+    padding: 3px 12px; font-size: 12px; border: 1px solid var(--pm-grey-300);
+    background: #fff; color: var(--pm-charcoal); border-radius: 3px; cursor: pointer;
+}
+.scanner-refresh-btn:hover { background: var(--pm-grey-50); }
+
+.scanner-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 10px; }
+.scanner-pill {
+    padding: 3px 12px; font-size: 12px; border: 1px solid var(--pm-grey-300);
+    background: #fff; color: var(--pm-grey-700); border-radius: 14px; cursor: pointer;
+}
+.scanner-pill:hover { background: var(--pm-grey-50); }
+.scanner-pill-active {
+    background: var(--pm-charcoal); color: #fff; border-color: var(--pm-charcoal);
+}
+
+.scanner-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.scanner-th {
+    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--pm-grey-500); border-bottom: 1px solid var(--pm-grey-300); padding: 6px 8px;
+}
+.scanner-th-num { text-align: right; }
+.scanner-th-rank { text-align: center; width: 34px; }
+.scanner-th-grp { text-align: center; font-weight: 700; color: var(--pm-accent);
+    border-bottom: 1px solid var(--pm-grey-300); font-size: 10px; }
+.scanner-grouprow th { padding: 4px 8px 2px; }
+.scanner-grp { border-left: 1px solid var(--pm-grey-300); }
+.scanner-mono { font-family: "Consolas", monospace; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+
+/* Vol smile + full-slice browse (redesign). */
+.scanner-smile-wrap { margin: 10px 0; }
+.scanner-smile-head { display: flex; align-items: center; justify-content: space-between; }
+.scanner-smile-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--pm-grey-500); }
+.scanner-smile-ctrl { display: flex; align-items: center; gap: 8px; }
+.scanner-smile-lbl { font-size: 11px; color: var(--pm-grey-700); }
+.scanner-expiry-dd { min-width: 140px; font-size: 12px; }
+.scanner-smile-graph { width: 100%; height: 280px; }
+
+/* Compact fit indicator (replaces the stacked reason chips in-row). */
+.scanner-fit { display: flex; align-items: center; gap: 5px; }
+.scanner-fit-rank { min-width: 14px; text-align: right; color: var(--pm-grey-700);
+    font-variant-numeric: tabular-nums; }
+.scanner-row-rec .scanner-fit-rank { color: var(--pm-urgent); font-weight: 700; }
+.scanner-fit-bar { flex: 1; height: 5px; min-width: 26px; background: var(--pm-grey-100);
+    border-radius: 3px; overflow: hidden; }
+.scanner-fit-fill { height: 100%; background: var(--pm-accent); }
+.scanner-row-rec .scanner-fit-fill { background: var(--pm-urgent); }
+
+/* Browse rows: candidates highlighted, the held strike marked, candidate rows clickable. */
+.scanner-row-cand { background: var(--pm-grey-50); }
+.scanner-row-held td { border-top: 1px solid var(--pm-urgent); }
+.scanner-clickable { cursor: pointer; }
+.scanner-clickable:hover { background: var(--pm-grey-100); }
+.scanner-tag { text-align: center; }
+.scanner-tag-costless { display: inline-block; padding: 1px 6px; font-size: 10px;
+    background: rgba(30, 126, 52, 0.12); color: var(--pos); border-radius: 3px; }
+.scanner-row { border-bottom: 1px solid var(--pm-grey-100); vertical-align: top; }
+.scanner-row:hover { background: var(--pm-grey-50); }
+.scanner-row td { padding: 6px 8px; }
+.scanner-row-rec { background: rgba(183, 121, 31, 0.06); }
+.scanner-row-rec:hover { background: rgba(183, 121, 31, 0.10); }
+.scanner-row-rec td { box-shadow: none; }
+.scanner-row-rec .scanner-rank { color: var(--pm-urgent); }
+.scanner-rank { text-align: center; font-variant-numeric: tabular-nums; color: var(--pm-grey-700);
+    border-left: 3px solid transparent; }
+.scanner-row-rec .scanner-rank { border-left-color: var(--pm-urgent); font-weight: 700; }
+.scanner-desc { font-family: "Consolas", monospace; color: var(--pm-charcoal); white-space: nowrap; }
+.scanner-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.scanner-pos { color: var(--pos); }
+.scanner-neg { color: var(--neg); }
+.scanner-why { max-width: 340px; }
+.scanner-chip {
+    display: inline-block; margin: 0 4px 3px 0; padding: 1px 7px; font-size: 11px;
+    background: var(--pm-grey-50); color: var(--pm-grey-700); border-radius: 3px;
+}
+.scanner-chip-flag { background: rgba(183, 121, 31, 0.12); color: var(--pm-urgent); }
+
+/* Current-vs-candidate comparison (payoff popup's Scanner tab). */
+.scanner-compare:not(:empty) { margin-top: 14px; padding-top: 12px;
+    border-top: 1px solid var(--pm-grey-300); }
+.scanner-cmp-header { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--pm-grey-500); margin-bottom: 8px; }
+.scanner-cmp-title { font-size: 13px; font-weight: 600; color: var(--pm-charcoal); margin-bottom: 8px; }
+.scanner-cmp-dial { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-bottom: 10px; }
+.scanner-cmp-graph { width: 100%; height: 300px; }
+.scanner-compare-hidden { display: none; }
+.scanner-cmp-cols { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 8px; }
+.cmp-tbl { min-width: 300px; flex: 1; }
+.cmp-tbl th { text-align: right; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--pm-grey-500); padding: 4px 8px;
+    border-bottom: 1px solid var(--pm-grey-300); }
+.cmp-lbl { text-align: left; color: var(--pm-grey-700); }
+.cmp-tbl td { padding: 4px 8px; }
+.cmp-foot td { border-top: 1px solid var(--pm-grey-300); font-weight: 600; }
+
+.scanner-empty { padding: 34px 10px; text-align: center; color: var(--pm-grey-500); font-size: 13px; }
+.scanner-loading { padding: 34px 10px; text-align: center; color: var(--pm-grey-500);
+    font-size: 13px; font-style: italic; }
+.scanner-footer { margin-top: 12px; font-size: 11px; color: var(--pm-grey-500); line-height: 1.5; }
